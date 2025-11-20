@@ -7,7 +7,7 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::compression::Compressor;
+use crate::compression::CompressorRegistry;
 use crate::error::{ParcodeError, Result};
 use crate::format::{ChildRef, MetaByte};
 use crate::graph::{Node, TaskGraph};
@@ -17,7 +17,7 @@ use crate::io::SeqWriter;
 struct ExecutionContext<'a> {
     graph: &'a TaskGraph,
     writer: &'a SeqWriter,
-    compressor: &'a dyn Compressor,
+    registry: &'a CompressorRegistry,
     /// Flags if a fatal error occurred, signaling all threads to stop early.
     abort_flag: AtomicBool,
     /// Captures the first error encountered for reporting.
@@ -52,13 +52,13 @@ impl<'a> ExecutionContext<'a> {
 pub fn execute_graph(
     graph: &TaskGraph,
     writer: &SeqWriter,
-    compressor: &dyn Compressor,
+    registry: &CompressorRegistry, 
 ) -> Result<ChildRef> {
     // 1. Setup the shared context.
     let ctx = ExecutionContext {
         graph,
         writer,
-        compressor,
+        registry,
         abort_flag: AtomicBool::new(false),
         error_capture: Mutex::new(None),
         root_result: Mutex::new(None),
@@ -164,13 +164,19 @@ fn process_node<'scope>(
 
     // --- STEP 2: COMPRESSION (CPU BOUND) ---
 
-    let compressor = ctx.compressor;
+    // 1. Obtener Config del Job
+    let config = node.job.config();
+    
+    // 2. Buscar Algoritmo
+    let compressor = match ctx.registry.get(config.compression_id) {
+        Ok(c) => c,
+        Err(e) => { ctx.signal_error(e); return; }
+    };
+    
+    // 3. Comprimir
     let compressed_payload = match compressor.compress(&raw_payload) {
         Ok(c) => c,
-        Err(e) => {
-            ctx.signal_error(e);
-            return;
-        }
+        Err(e) => { ctx.signal_error(e); return; }
     };
 
     // --- STEP 3: FORMATTING (CPU BOUND) ---

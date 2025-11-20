@@ -1,5 +1,3 @@
-// src/io.rs
-
 //! High-Performance Sequential Writer.
 //!
 //! # Architecture: Aggressive Buffering

@@ -1,5 +1,3 @@
-// src/reader.rs
-
 //! The Read-Side Engine: Parallel Reconstruction & Random Access.
 //!
 //! This module implements the logic to map a `parcode` file into memory and reconstruct
@@ -31,8 +29,7 @@ use std::mem::{ManuallyDrop, MaybeUninit};
 use std::path::Path;
 use std::sync::Arc;
 
-#[cfg(feature = "lz4_flex")]
-use crate::compression::{self, Compressor};
+use crate::compression::CompressorRegistry;
 use crate::error::{ParcodeError, Result};
 use crate::format::{ChildRef, GLOBAL_HEADER_SIZE, GlobalHeader, MAGIC_BYTES, MetaByte};
 
@@ -57,27 +54,31 @@ where
     }
 }
 
-// Note: For user structs, the `#[derive(ParcodeObject)]` macro (or manual impl)
-// should implement this trait, typically calling `node.decode::<Self>()`.
-
 // --- CORE READER HANDLE ---
 
 /// The main handle for an open Parcode file.
 ///
-/// It holds the memory map (thread-safe via Arc) and the global file header.
+/// It holds the memory map (thread-safe via Arc), the global file header,
+/// and the registry of available decompression algorithms.
 /// Cloning this struct is cheap (increments Arc ref count).
 #[derive(Debug)]
 pub struct ParcodeReader {
+    /// Memory-mapped file content.
     mmap: Arc<Mmap>,
+    /// Parsed global footer/header information.
     header: GlobalHeader,
+    /// Total size of the file in bytes.
     file_size: u64,
+    /// Registry containing available decompression algorithms (Lz4, etc.).
+    registry: CompressorRegistry,
 }
 
 impl ParcodeReader {
     /// Opens a Parcode file, maps it into memory, and validates integrity.
     ///
     /// # Errors
-    /// Returns error if file doesn't exist, is truncated, or has invalid magic bytes.
+    /// Returns error if the file does not exist, is smaller than the header,
+    /// or contains invalid magic bytes/version.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let file = File::open(path)?;
         let file_size = file.metadata()?.len();
@@ -88,8 +89,9 @@ impl ParcodeReader {
             ));
         }
 
-        // SAFETY: Mmap is fundamentally unsafe in the presence of external modification.
-        // We assume the file is not modified by other processes while reading.
+        // SAFETY: Mmap is fundamentally unsafe in the presence of external modification
+        // (e.g., another process truncating the file). We assume the file is treated
+        // as immutable by the OS while we read it.
         #[allow(unsafe_code)]
         let mmap = unsafe { Mmap::map(&file)? };
 
@@ -124,18 +126,12 @@ impl ParcodeReader {
                 checksum,
             },
             file_size,
+            // Initialize registry with default algorithms (NoCompression, Lz4 if enabled)
+            registry: CompressorRegistry::new(),
         })
     }
 
-    #[allow(dead_code)]
-    fn read_u64(slice: &[u8]) -> Result<u64> {
-        slice
-            .try_into()
-            .map(u64::from_le_bytes)
-            .map_err(|_| ParcodeError::Format("Failed to read u64".into()))
-    }
-
-    #[allow(dead_code)]
+    /// Helper to read a u32 from a byte slice (Little Endian).
     fn read_u32(slice: &[u8]) -> Result<u32> {
         slice
             .try_into()
@@ -150,6 +146,10 @@ impl ParcodeReader {
 
     /// Internal: Resolves a physical offset/length into a `ChunkNode`.
     /// Parses the footer to determine if the chunk has children.
+    ///
+    /// # Arguments
+    /// * `offset`: Absolute byte offset in the file.
+    /// * `length`: Total length of the chunk including metadata.
     fn get_chunk(&self, offset: u64, length: u64) -> Result<ChunkNode<'_>> {
         if offset + length > self.file_size {
             return Err(ParcodeError::Format(format!(
@@ -200,6 +200,7 @@ impl ParcodeReader {
 /// A lightweight cursor pointing to a specific node in the dependency graph.
 ///
 /// This struct contains the logic to read, decompress, and navigate from this node.
+/// It is a "view" into the `ParcodeReader` and holds a lifetime reference to it.
 #[derive(Debug, Clone)]
 pub struct ChunkNode<'a> {
     reader: &'a ParcodeReader,
@@ -216,7 +217,7 @@ pub struct ChunkNode<'a> {
     payload_end_offset: u64,
 }
 
-/// Helper struct for deserializing RLE metadata.
+/// Helper struct for deserializing RLE metadata stored in vector headers.
 #[derive(Deserialize, Debug, Clone)]
 struct ShardRun {
     item_count: u32,
@@ -239,30 +240,27 @@ impl<'a> ChunkNode<'a> {
         }
 
         let raw = &self.reader.mmap[start..end];
+        let method_id = self.meta.compression_method();
 
-        match self.meta.compression_method() {
-            0 => Ok(Cow::Borrowed(raw)), // FIX: TRUE ZERO-COPY
-            #[cfg(feature = "lz4_flex")]
-            1 => compression::lz4::Lz4Compressor::decompress_static(raw).map(Cow::Owned),
-            id => Err(ParcodeError::Compression(format!("Unknown algo: {id}"))),
-        }
+        // Delegate decompression to the registry.
+        // This supports pluggable algorithms (e.g., Lz4).
+        self.reader.registry.get(method_id)?.decompress(raw)
     }
 
     /// Returns a list of all direct child nodes.
     ///
     /// This allows manual traversal of the dependency graph (e.g., iterating over specific shards).
-    /// Note: This does not deserialize the children, only loads their metadata.
+    /// Note: This does not deserialize the children, only loads their metadata (offsets).
     pub fn children(&self) -> Result<Vec<ChunkNode<'a>>> {
         let mut list = Vec::with_capacity(self.child_count as usize);
         for i in 0..self.child_count {
-            // Reutilizamos el helper interno
             list.push(self.get_child_by_index(i as usize)?);
         }
         Ok(list)
     }
 
     /// Standard single-threaded deserialization.
-    /// Use this for leaf nodes or simple structs.
+    /// Use this for leaf nodes or simple structs that fit in memory.
     pub fn decode<T: DeserializeOwned>(&self) -> Result<T> {
         let payload = self.read_raw()?;
         bincode::serde::decode_from_slice(&payload, bincode::config::standard())
@@ -274,46 +272,28 @@ impl<'a> ChunkNode<'a> {
     ///
     /// This method reconstructs a `Vec<T>` by deserializing all shards in parallel
     /// and writing them directly into a preallocated buffer. It is designed for
-    /// high‑performance scenarios where collections are split into shards and must
-    /// be reassembled efficiently.
+    /// high‑performance scenarios where collections are split into shards.
     ///
     /// # Safety & Performance Considerations
     /// - **Uninitialized Allocation:** Uses `MaybeUninit` to allocate the final buffer
-    ///   without incurring the cost of zero‑initialization. This is safe only because
-    ///   every element is guaranteed to be written before the buffer is exposed.
-    /// - **Parallel Filling:** Uses `rayon` to concurrently populate disjoint regions
-    ///   of the buffer. Each shard writes to a unique slice, ensuring no data races.
+    ///   without zero‑initialization cost.
+    /// - **Parallel Filling:** Uses `rayon` to concurrently populate disjoint regions.
     /// - **Ownership Management:** Wraps temporary vectors in `ManuallyDrop` to prevent
-    ///   Rust from automatically freeing their memory after items are copied. This avoids
-    ///   double‑free errors when raw pointers are used.
-    /// - **Pointer Arithmetic:** Converts the buffer’s base pointer into a `usize` so it
-    ///   can safely cross thread boundaries (`Send + Sync + Copy`). Each worker thread
-    ///   reconstructs the pointer locally before writing.
-    /// - **Finalization:** After successful stitching, the uninitialized buffer is
-    ///   “blessed” into a valid `Vec<T>` using `Vec::from_raw_parts`. This step is
-    ///   inherently unsafe but correct because all invariants have been upheld.
-    ///
-    /// # Error Handling
-    /// - Detects integer overflow during run‑length expansion of shard metadata.
-    /// - Validates that the total item count implied by RLE matches the header.
-    /// - Ensures no shard writes beyond the allocated buffer capacity.
-    /// - Returns descriptive `ParcodeError` variants for all format or serialization issues.
+    ///   double‑free errors when moving memory via `ptr::copy`.
+    /// - **Pointer Arithmetic:** Converts the buffer base pointer to `usize` to safely
+    ///   share it across thread boundaries (`Send + Sync + Copy`).
     pub fn decode_parallel_collection<T>(&self) -> Result<Vec<T>>
     where
         T: DeserializeOwned + Send + Sync,
     {
         let payload = self.read_raw()?;
 
-        // Fallback path for small vectors:
-        // If the payload is too small to contain metadata, fall back to the
-        // standard sequential decode. This avoids unnecessary parallel overhead.
+        // Fallback path for small vectors or leaves:
         if payload.len() < 8 {
             return self.decode::<Vec<T>>();
         }
 
         // 1. Parse metadata from header
-        // First 8 bytes encode the total number of items. The remainder encodes
-        // run‑length encoded (RLE) shard descriptors.
         let total_items = u64::from_le_bytes(payload[0..8].try_into().unwrap()) as usize;
         let runs_data = &payload[8..];
         let shard_runs: Vec<ShardRun> =
@@ -322,9 +302,6 @@ impl<'a> ChunkNode<'a> {
                 .map_err(|e| ParcodeError::Serialization(e.to_string()))?;
 
         // 2. Expand RLE into explicit shard jobs
-        // Each run describes how many items a shard contains and how many times
-        // that shard pattern repeats. We flatten this into a list of jobs, each
-        // with a shard index and its global start offset.
         let mut shard_jobs = Vec::with_capacity(self.child_count as usize);
         let mut current_shard_idx = 0;
         let mut current_global_idx: usize = 0;
@@ -332,7 +309,6 @@ impl<'a> ChunkNode<'a> {
         for run in shard_runs {
             let items_per_shard = run.item_count as usize;
             for _ in 0..run.repeat {
-                // Overflow check: ensure global index arithmetic is safe
                 if current_global_idx.checked_add(items_per_shard).is_none() {
                     return Err(ParcodeError::Format(
                         "Integer overflow in RLE calculation".into(),
@@ -344,8 +320,6 @@ impl<'a> ChunkNode<'a> {
             }
         }
 
-        // Strict metadata validation:
-        // The total number of items implied by RLE must match the header.
         if current_global_idx != total_items {
             return Err(ParcodeError::Format(format!(
                 "Metadata mismatch: Header says {} items, RLE implies {}",
@@ -358,9 +332,9 @@ impl<'a> ChunkNode<'a> {
         }
 
         // 3. Allocate uninitialized buffer
-        // Reserve capacity for all items without initializing them.
         let mut result_buffer: Vec<MaybeUninit<T>> = Vec::with_capacity(total_items);
 
+        // SAFETY: We are creating a "hole" in memory that we PROMISE to fill.
         #[allow(unsafe_code)]
         unsafe {
             result_buffer.set_len(total_items);
@@ -374,37 +348,32 @@ impl<'a> ChunkNode<'a> {
             .into_par_iter()
             .try_for_each(move |(shard_idx, start_idx)| -> Result<()> {
                 let shard_node = self.get_child_by_index(shard_idx)?;
-                // Deserialize shard into a temporary vector (thread‑local).
+                // Deserialize shard into a thread-local vector
                 let items: Vec<T> = shard_node.decode()?;
                 let count = items.len();
 
-                // Critical bounds check: ensure shard fits into allocated buffer.
                 if start_idx + count > total_items {
                     return Err(ParcodeError::Format(
                         "Shard items overflowed allocated buffer".into(),
                     ));
                 }
 
-                // Prevent double‑free: wrap items in ManuallyDrop so Rust does not
-                // automatically deallocate them after raw pointer copy.
+                // Prevent double‑free: wrap items so we can take ownership of bits
                 let src_items = ManuallyDrop::new(items);
 
                 #[allow(unsafe_code)]
                 unsafe {
-                    // Reconstruct destination pointer from base.
-                    // Note: `ptr::add` operates in units of T, not bytes.
+                    // Reconstruct pointer. `ptr::add` works on T units.
                     let dest_ptr = (buffer_base as *mut T).add(start_idx);
-                    let src_ptr = src_items.as_ptr(); // *const T
+                    let src_ptr = src_items.as_ptr(); 
 
-                    // Efficient memory copy (equivalent to memcpy).
+                    // Efficient memory copy
                     std::ptr::copy_nonoverlapping(src_ptr, dest_ptr, count);
                 }
                 Ok(())
             })?;
 
-        // 5. Finalize buffer into a valid Vec<T>
-        // At this point, all elements have been safely written. We can now
-        // reinterpret the uninitialized buffer as a fully initialized Vec<T>.
+        // 5. Bless the buffer
         #[allow(unsafe_code)]
         let final_vec = unsafe {
             let mut manual_buffer = ManuallyDrop::new(result_buffer);
@@ -421,7 +390,6 @@ impl<'a> ChunkNode<'a> {
     // --- COLLECTION UTILITIES ---
 
     /// Returns the logical number of items in this container.
-    /// O(1) - reads cached header.
     pub fn len(&self) -> u64 {
         if let Ok(payload) = self.read_raw() {
             if payload.len() >= 8 {
@@ -431,7 +399,7 @@ impl<'a> ChunkNode<'a> {
         0
     }
 
-    /// Checks if empty.
+    /// Checks if the container is empty.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -494,11 +462,11 @@ impl<'a> ChunkNode<'a> {
 
     // --- INTERNAL HELPERS ---
 
+    /// Retrieves a child ChunkNode by its index in the footer.
     fn get_child_by_index(&self, index: usize) -> Result<ChunkNode<'a>> {
         if index >= self.child_count as usize {
             return Err(ParcodeError::Format("Child index out of bounds".into()));
         }
-        // Calculate offset in the footer
         let footer_start = self.payload_end_offset as usize;
         let entry_start = footer_start + (index * ChildRef::SIZE);
         let bytes = &self.reader.mmap[entry_start..entry_start + ChildRef::SIZE];
@@ -507,6 +475,7 @@ impl<'a> ChunkNode<'a> {
         self.reader.get_chunk(r.offset, r.length)
     }
 
+    /// Maps a global item index to a specific (shard_index, internal_index).
     fn resolve_rle_index(&self, global_index: usize, runs: &[ShardRun]) -> Result<(usize, usize)> {
         let mut current_base = 0;
         let mut shard_base = 0;
@@ -530,12 +499,14 @@ impl<'a> ChunkNode<'a> {
 // --- STREAMING ITERATOR ---
 
 /// An iterator that loads shards on demand, allowing iteration over datasets
-/// larger than available RAM (if items are processed one by one).
+/// larger than available RAM.
+///
+/// It buffers only one shard at a time.
 #[derive(Debug)]
 pub struct ChunkIterator<'a, T> {
     container: ChunkNode<'a>,
     #[allow(dead_code)]
-    shard_runs: Vec<ShardRun>, // Kept for potential future RLE nav logic
+    shard_runs: Vec<ShardRun>, // Reserved for future skip logic
     total_items: usize,
     current_global_idx: usize,
 
@@ -576,7 +547,6 @@ impl<'a, T: DeserializeOwned> Iterator for ChunkIterator<'a, T> {
 
         // 2. Buffer empty? Load next shard
         if self.current_shard_idx >= self.container.child_count as usize {
-            // Should not happen if total_items matches chunks, implies corruption or logic bug
             return Some(Err(ParcodeError::Internal(
                 "Iterator mismatch: runs out of shards".into(),
             )));
