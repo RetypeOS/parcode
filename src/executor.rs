@@ -4,8 +4,8 @@
 //! to be purely reactive: completed children trigger the scheduling of their parents,
 //! eliminating the need for a central polling loop and reducing latency.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::compression::Compressor;
 use crate::error::{ParcodeError, Result};
@@ -28,7 +28,6 @@ struct ExecutionContext<'a> {
 
 impl<'a> ExecutionContext<'a> {
     fn signal_error(&self, err: ParcodeError) {
-        // Only capture the first error.
         let mut guard = self.error_capture.lock().unwrap_or_else(|p| p.into_inner());
         if guard.is_none() {
             *guard = Some(err);
@@ -94,23 +93,20 @@ pub fn execute_graph(
     if ctx.should_abort() {
         let guard = ctx.error_capture.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(err) = guard.as_ref() {
-            // Clone the error to return it (ParcodeError needs to be Clone or re-constructed)
-            // For now, we format it to string to create a new error if not Clone.
-            return Err(ParcodeError::Internal(format!("Execution failed: {}", err)));
+            return Err(err.clone());
         }
-        return Err(ParcodeError::Internal("Unknown error during execution".into()));
+        return Err(ParcodeError::Internal("Unknown execution error".into()));
     }
 
     // 5. Return the Root Result.
-    let root_guard = ctx.root_result.lock().unwrap_or_else(|p| p.into_inner());
-    root_guard.ok_or_else(|| {
-        if graph.len() == 0 {
-            // Special case: Empty graph -> Empty file conceptually, but we return a dummy ref
-            // or handle it upstream. Here we assume graph > 0.
-             ParcodeError::Internal("Graph executed but no root result captured.".into())
-        } else {
-             ParcodeError::Internal("Graph execution finished incomplete.".into())
-        }
+    let root_guard = ctx
+        .root_result
+        .lock()
+        .map_err(|_| ParcodeError::Internal("Root result mutex poisoned".into()))?;
+
+    root_guard.clone().ok_or_else(|| {
+        // ChildRef is Copy/Clone
+        ParcodeError::Internal("Graph execution incomplete".into())
     })
 }
 
@@ -129,8 +125,18 @@ fn process_node<'scope>(
     // --- STEP 1: PREPARE DATA (CPU BOUND) ---
 
     let mut completed_children_raw = {
-        let mut lock = node.completed_children.lock().unwrap_or_else(|p| p.into_inner());
-        std::mem::take(&mut *lock)
+        let lock = node
+            .completed_children
+            .lock()
+            .map_err(|_| ParcodeError::Internal("Node mutex poisoned".into()));
+
+        match lock {
+            Ok(mut guard) => std::mem::take(&mut *guard),
+            Err(e) => {
+                ctx.signal_error(e);
+                return;
+            }
+        }
     };
 
     completed_children_raw.sort_by_key(|(id, _)| *id);
@@ -157,7 +163,7 @@ fn process_node<'scope>(
     };
 
     // --- STEP 2: COMPRESSION (CPU BOUND) ---
-    
+
     let compressor = ctx.compressor;
     let compressed_payload = match compressor.compress(&raw_payload) {
         Ok(c) => c,
@@ -171,7 +177,7 @@ fn process_node<'scope>(
 
     // Construct the final binary block:
     // [Compressed Data] + [Footer Table (if chunkable)] + [MetaByte]
-    
+
     // We need to calculate total size to allocate buffer once.
     let footer_size = if is_chunkable {
         (children_refs.len() * ChildRef::SIZE) + 4
@@ -196,9 +202,9 @@ fn process_node<'scope>(
 
     // --- STEP 4: WRITING (I/O BOUND) ---
     // This is the only serialization point (Mutex).
-    
+
     let write_result = ctx.writer.write_all(&final_buffer);
-    
+
     let offset = match write_result {
         Ok(off) => off,
         Err(e) => {
@@ -217,15 +223,18 @@ fn process_node<'scope>(
 
     if let Some(parent_id) = node.parent {
         let parent_node = ctx.graph.get_node(parent_id);
-        
+
         // A. Register our result in the parent
-        parent_node.register_child_result(node.id, my_ref); 
+        if let Err(e) = parent_node.register_child_result(node.id, my_ref) {
+            ctx.signal_error(e);
+            return;
+        }
 
         // B. Decrement parent's dependency counter.
         // `fetch_sub` returns the PREVIOUS value.
         // If previous was 1, it means it is NOW 0 -> Ready to fire.
         let prev_deps = parent_node.atomic_deps.fetch_sub(1, Ordering::SeqCst);
-        
+
         if prev_deps == 1 {
             // We are the last child! We have the honor of waking the parent.
             // Spawn into the existing scope.

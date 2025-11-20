@@ -1,8 +1,9 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
 use super::id::ChunkId;
 use super::job::SerializationJob;
 use crate::format::ChildRef;
+use crate::{ParcodeError, Result};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// A single node in the dependency graph.
 ///
@@ -16,7 +17,7 @@ pub struct Node {
     /// The unique ID of this node.
     pub id: ChunkId,
 
-    /// The ID of the parent node. 
+    /// The ID of the parent node.
     /// `None` if this is the Root node.
     pub parent: Option<ChunkId>,
 
@@ -45,11 +46,15 @@ impl Node {
             completed_children: Mutex::new(Vec::new()),
         }
     }
-    
+
     /// Adds a completed child reference to this node's collection.
-    pub fn register_child_result(&self, child_id: ChunkId, child_ref: ChildRef) {
-        let mut lock = self.completed_children.lock().expect("Mutex poisoned");
+    pub fn register_child_result(&self, child_id: ChunkId, child_ref: ChildRef) -> Result<()> {
+        let mut lock = self
+            .completed_children
+            .lock()
+            .map_err(|_| ParcodeError::Internal(format!("Mutex poisoned on node {:?}", self.id)))?;
         lock.push((child_id, child_ref));
+        Ok(())
     }
 }
 
@@ -80,10 +85,10 @@ impl TaskGraph {
     pub fn link_parent_child(&mut self, parent_id: ChunkId, child_id: ChunkId) {
         // 1. Increment Parent's dependency counter.
         let parent_node = &self.nodes[parent_id.as_u32() as usize];
-        parent_node.atomic_deps.fetch_add(1, Ordering::Relaxed);
+        parent_node.atomic_deps.fetch_add(1, Ordering::SeqCst);
 
         // 2. Set Child's parent pointer.
-        // Note: We need mutable access to setting the parent, but we established 
+        // Note: We need mutable access to setting the parent, but we established
         // `nodes` as a Vec. Since we are in the "Build Phase" (single threaded visitor),
         // we can mutate freely.
         let child_node = &mut self.nodes[child_id.as_u32() as usize];
@@ -99,8 +104,8 @@ impl TaskGraph {
     pub fn len(&self) -> usize {
         self.nodes.len()
     }
-    
-    /// Returns the list of all nodes. 
+
+    /// Returns the list of all nodes.
     /// Used by the executor to find initial leaves (deps == 0).
     pub fn nodes(&self) -> &[Node] {
         &self.nodes

@@ -5,25 +5,26 @@
 
 use std::fmt;
 use std::io;
+use std::sync::Arc;
 
 /// A specialized Result type for Parcode operations.
 pub type Result<T> = std::result::Result<T, ParcodeError>;
 
 /// The master error enum covering all failure domains.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ParcodeError {
     /// Low-level I/O failure (disk full, permissions, etc.).
-    Io(io::Error),
-    
+    Io(Arc<io::Error>),
+
     /// Serialization/Deserialization failure (bincode).
     Serialization(String),
-    
+
     /// Compression algorithm failure.
     Compression(String),
-    
+
     /// The file format is invalid, corrupted, or version mismatch.
     Format(String),
-    
+
     /// Logic error in the graph scheduler (should not happen in prod).
     Internal(String),
 }
@@ -51,6 +52,6 @@ impl std::error::Error for ParcodeError {
 
 impl From<io::Error> for ParcodeError {
     fn from(err: io::Error) -> Self {
-        Self::Io(err)
+        Self::Io(Arc::new(err))
     }
 }

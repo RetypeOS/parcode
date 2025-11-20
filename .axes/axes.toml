@@ -1,0 +1,22 @@
+name = "parcode"
+version = "2.0.1"
+description = "Blazing fast parallel caching for Rust. Serializes complex data to a chunked file format to get CPU maximum power on data loads, but as a simple binary loader."
+
+[scripts.test]
+desc = "Run a simple test echo command."
+run = """echo "✅ Test for '<name>' successful!""""
+
+[options.at_start]
+desc = "Commands to run when entering a session (e.g., `source .venv/bin/activate`)"
+run = "# echo 'Entering session...'"
+
+[options.at_exit]
+desc = "Commands to run when exiting a session (e.g., `docker-compose down`)"
+run = "# echo 'Exiting session...'"
+
+[options.open_with]
+
+[vars]
+GREETING = "Hello from an axes variable!"
+
+[env]
