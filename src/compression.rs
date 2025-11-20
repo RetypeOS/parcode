@@ -3,11 +3,11 @@
 //! Handles the transformation of raw byte buffers into compressed chunks.
 //! Includes conditional logic to skip compression for small payloads.
 
-use std::borrow::Cow;
 use crate::error::Result;
+use std::borrow::Cow;
 
 /// Threshold in bytes. If data is smaller than this, we don't compress.
-#[allow(dead_code)] 
+#[allow(dead_code)]
 const MIN_COMPRESSION_THRESHOLD: usize = 64;
 
 /// Interface for compression algorithms.
@@ -21,7 +21,7 @@ pub trait Compressor: Send + Sync + std::fmt::Debug {
     fn compress<'a>(&self, data: &'a [u8]) -> Result<Cow<'a, [u8]>>;
 
     /// Decompresses the data.
-    fn decompress(&self, data: &[u8]) -> Result<Vec<u8>>;
+    fn decompress<'a>(&self, data: &'a [u8]) -> Result<Cow<'a, [u8]>>;
 }
 
 // --- No Compression (Pass-through) ---
@@ -31,14 +31,16 @@ pub trait Compressor: Send + Sync + std::fmt::Debug {
 pub struct NoCompression;
 
 impl Compressor for NoCompression {
-    fn id(&self) -> u8 { 0 }
+    fn id(&self) -> u8 {
+        0
+    }
 
     fn compress<'a>(&self, data: &'a [u8]) -> Result<Cow<'a, [u8]>> {
         Ok(Cow::Borrowed(data))
     }
 
-    fn decompress(&self, data: &[u8]) -> Result<Vec<u8>> {
-        Ok(data.to_vec())
+    fn decompress<'a>(&self, data: &'a [u8]) -> Result<Cow<'a, [u8]>> {
+        Ok(Cow::Borrowed(data))
     }
 }
 
@@ -50,7 +52,9 @@ pub struct Lz4Compressor;
 
 #[cfg(feature = "lz4_flex")]
 impl Compressor for Lz4Compressor {
-    fn id(&self) -> u8 { 1 }
+    fn id(&self) -> u8 {
+        1
+    }
 
     fn compress<'a>(&self, data: &'a [u8]) -> Result<Cow<'a, [u8]>> {
         // Heuristic: Don't compress tiny chunks
@@ -59,9 +63,9 @@ impl Compressor for Lz4Compressor {
         }
 
         let compressed = lz4_flex::compress_prepend_size(data);
-        
+
         // Safety check: If compression made it larger (rare but possible on entropy),
-        // return original. (Requires external logic to handle ID change, 
+        // return original. (Requires external logic to handle ID change,
         // for now we stick to the compressed version to keep ID stable).
         Ok(Cow::Owned(compressed))
     }

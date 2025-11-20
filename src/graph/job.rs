@@ -16,7 +16,7 @@ pub trait SerializationJob: Send + Sync {
     /// Returns the estimated size in bytes (heuristic).
     /// Used for the "Inlining" optimization pass.
     fn estimated_size(&self) -> usize;
-    
+
     /// Helper for debugging.
     fn as_any(&self) -> &dyn Any;
 }

@@ -1,18 +1,29 @@
-//! Low-level I/O operations handling sequential writing.
-//!
-//! This module ensures that multiple threads can submit data to be written
-//! to disk without race conditions, guaranteeing atomic writes of chunks.
+// src/io.rs
 
+//! High-Performance Sequential Writer.
+//!
+//! # Architecture: Aggressive Buffering
+//! Instead of complex channel passing (which introduces scheduling jitter),
+//! we use a `Mutex` protecting a massive `BufWriter` (16MB).
+//!
+//! - **Latency:** Writes are effectively `memcpy` operations into RAM until the buffer fills.
+//! - **Throughput:** Flushes happen in huge chunks, saturating SSD bandwidth.
+//! - **Stability:** Eliminates channel backpressure "stop-and-go" behavior.
+
+use crate::error::{ParcodeError, Result};
 use std::fs::File;
 use std::io::{BufWriter, Write};
+use std::path::Path;
 use std::sync::Mutex;
-use crate::error::Result;
 
-/// A thread-safe writer that appends data to a file and tracks the current offset.
+/// We use a 16MB buffer.
+/// This allows ~128 chunks of 128KB to be written purely in memory
+/// before triggering a syscall.
+const WRITE_BUFFER_SIZE: usize = 16 * 1024 * 1024;
+
+/// PLACEHOLDER
 #[derive(Debug)]
 pub struct SeqWriter {
-    /// The underlying buffered writer protected by a Mutex.
-    /// We use a Mutex because writing to a file is inherently sequential.
     inner: Mutex<WriterState>,
 }
 
@@ -23,48 +34,46 @@ struct WriterState {
 }
 
 impl SeqWriter {
-    /// Creates a new SeqWriter from an existing file.
-    /// The file is truncated on creation.
-    pub fn create(path: &std::path::Path) -> Result<Self> {
+    /// Opens the file with an optimized buffer configuration.
+    pub fn create(path: &Path) -> Result<Self> {
         let file = File::create(path)?;
         Ok(Self {
             inner: Mutex::new(WriterState {
-                writer: BufWriter::new(file),
+                writer: BufWriter::with_capacity(WRITE_BUFFER_SIZE, file),
                 current_offset: 0,
             }),
         })
     }
 
-    /// Atomically writes a complete buffer to the file.
-    /// Returns the offset where the writing started.
+    /// Writes a chunk of data atomically to the file sequence.
+    ///
+    /// Returns the byte offset where the chunk begins.
     pub fn write_all(&self, buffer: &[u8]) -> Result<u64> {
-        // Lock the writer. This is the synchronization point.
-        let mut state = self.inner.lock().map_err(|_| 
-            crate::error::ParcodeError::Internal("SeqWriter Mutex poisoned".into())
-        )?;
+        // Acquire lock.
+        // Since we mostly do memcpy, contention is extremely low.
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| ParcodeError::Internal("Writer mutex poisoned".into()))?;
 
         let start_offset = state.current_offset;
-        
+
+        // This call usually just copies memory.
+        // It only blocks for disk I/O once every ~16MB of data.
         state.writer.write_all(buffer)?;
+
         state.current_offset += buffer.len() as u64;
 
         Ok(start_offset)
     }
 
-    /// Flushes the buffer to disk.
+    /// Forces data to disk.
     pub fn flush(&self) -> Result<()> {
-        let mut state = self.inner.lock().map_err(|_| 
-            crate::error::ParcodeError::Internal("SeqWriter Mutex poisoned".into())
-        )?;
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| ParcodeError::Internal("Writer mutex poisoned".into()))?;
         state.writer.flush()?;
         Ok(())
-    }
-
-    /// Returns the current file cursor position.
-    pub fn current_offset(&self) -> Result<u64> {
-        let state = self.inner.lock().map_err(|_| 
-            crate::error::ParcodeError::Internal("SeqWriter Mutex poisoned".into())
-        )?;
-        Ok(state.current_offset)
     }
 }

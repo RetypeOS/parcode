@@ -17,7 +17,7 @@ pub const MAGIC_BYTES: [u8; 4] = *b"PAR4";
 
 /// The fixed size of the Global Header.
 /// Magic(4) + Version(2) + RootOffset(8) + RootLength(8) + Checksum(4) = 26
-pub const GLOBAL_HEADER_SIZE: usize = 26; 
+pub const GLOBAL_HEADER_SIZE: usize = 26;
 
 /// Configuration flags for a specific chunk, stored in the last byte.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,7 +26,7 @@ pub struct MetaByte(u8);
 impl MetaByte {
     const CHUNKABLE_MASK: u8 = 0b0000_0001; // Bit 0
     const COMPRESSION_MASK: u8 = 0b0000_1110; // Bits 1-3
-    
+
     /// Creates a new MetaByte.
     pub fn new(is_chunkable: bool, compression_id: u8) -> Self {
         let mut byte = 0;
@@ -105,7 +105,7 @@ pub struct GlobalHeader {
     /// PLACEHOLDER
     pub root_length: u64,
     /// Reserved for CRC/Checksum of the header itself.
-    pub checksum: u32, 
+    pub checksum: u32,
 }
 
 impl GlobalHeader {
