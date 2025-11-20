@@ -1,11 +1,8 @@
-// src/lib.rs
-
-//! # Parcode V2
-//!
+//! # Parcode V3
+//! 
 //! A high-performance, graph-based serialization library for Rust.
 
-// Modificamos la política de unsafe para permitir excepciones locales con #[allow]
-#![deny(unsafe_code)]
+#![deny(unsafe_code)] 
 #![deny(clippy::unwrap_used)]
 #![deny(clippy::panic)]
 #![warn(missing_docs)]
@@ -14,33 +11,42 @@ pub mod compression;
 pub mod error;
 pub mod format;
 pub mod io;
-
-/// High-level public API.
-pub mod api;
-/// Module for the parallel execution engine.
-pub mod executor;
-/// Module for dependency graph definitions.
-pub mod graph;
-/// Reader implementation.
-pub mod reader;
-/// Module for visitor pattern interfaces.
 pub mod visitor;
+pub mod graph;
+pub mod executor;
+pub mod api;
+pub mod reader;
 
-// Incluimos las implementaciones de colecciones (Vec, etc)
-mod visitor_impls;
+mod visitor_impls; 
 
-// Re-exports
-pub use api::Parcode;
+// --- MÓDULOS DE SOPORTE PARA LA MACRO ---
+
+/// Runtime utilities used by the derived code.
+#[doc(hidden)]
+pub mod rt; 
+
+/// Internal re-exports for the macro to ensure dependencies are available.
+#[doc(hidden)]
+pub mod internal {
+    pub use bincode;
+    pub use serde;
+}
+
+// --- RE-EXPORTS ---
+
+pub use compression::{Compressor, NoCompression};
 #[cfg(feature = "lz4_flex")]
 pub use compression::Lz4Compressor;
-pub use compression::{Compressor, NoCompression};
+
 pub use error::{ParcodeError, Result};
+pub use api::Parcode;
 pub use reader::ParcodeReader;
 
-// Derive macro
-// pub use parcode_derive::ParcodeObject;
+// --- LA PIEZA FALTANTE ---
+// Re-exportamos la macro derive para que sea accesible como `parcode::ParcodeObject`
+pub use parcode_derive::ParcodeObject;
 
-/// PLACEHOLDER
+///PLACEHOLDER
 pub mod constants {
     /// PLACEHOLDER
     pub const DEFAULT_BUFFER_SIZE: usize = 8 * 1024;

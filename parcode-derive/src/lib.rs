@@ -1,166 +1,270 @@
-use proc_macro::TokenStream;
-use quote::{quote, ToTokens};
-use syn::{parse_macro_input, DeriveInput, Data, Fields, Meta, NestedMeta};
+//! # Parcode Derive Macros
+//!
+//! This crate provides the procedural macros for `parcode`. It automates the implementation
+//! of the `ParcodeVisitor`, `SerializationJob`, and `ParcodeNative` traits for user-defined structs.
+//!
+//! ## Architecture
+//! The macro implements the "Surgical Serialization" strategy:
+//! 1. **Local Fields:** Serialized into the current chunk via `bincode`.
+//! 2. **Remote Fields:** Marked with `#[parcode(chunkable)]`, these become child nodes in the graph.
+//!
+//! Compatible with `syn 2.0`.
 
+use proc_macro::TokenStream;
+use quote::quote;
+use syn::{parse_macro_input, DeriveInput, Data, Attribute, LitStr};
+
+/// Derives `ParcodeVisitor`, `SerializationJob`, and `ParcodeNative`.
 #[proc_macro_derive(ParcodeObject, attributes(parcode))]
 pub fn derive_parcode_object(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = input.ident;
     
-    // Filter fields marked with #[parcode(chunkable)]
-    let chunkable_fields = get_chunkable_fields(&input.data);
+    // 1. Validation: Only structs are supported.
+    let data_struct = match input.data {
+        Data::Struct(ds) => ds,
+        _ => return syn::Error::new(name.span(), "ParcodeObject only supports structs").to_compile_error().into(),
+    };
 
-    // 1. Implementation of ParcodeVisitor
-    // Logic: Visit self. Store self as a node. Recurse into chunkable fields.
-    let visit_impl = impl_visitor(&name, &chunkable_fields);
+    // 2. Field Classification
+    let mut locals = Vec::new();
+    let mut remotes = Vec::new();
 
-    // 2. Implementation of SerializationJob
-    // Logic: Serialize self using bincode. BUT, for chunkable fields, 
-    // DO NOT serialize the data. Instead, substitute with the ChildRef 
-    // from the `completed_children` list passed to execute().
-    let job_impl = impl_serialization_job(&name, &chunkable_fields);
+    for field in data_struct.fields {
+        // Parse attributes. Propagate compilation errors if syntax is invalid.
+        let (is_chunkable, compression_id) = match parse_attributes(&field.attrs) {
+            Ok(res) => res,
+            Err(e) => return e.to_compile_error().into(),
+        };
+        
+        if is_chunkable {
+            remotes.push(RemoteField { 
+                ident: field.ident.clone().unwrap(), 
+                ty: field.ty.clone(),
+                compression_id 
+            });
+        } else {
+            locals.push(LocalField { 
+                ident: field.ident.clone().unwrap(),
+                ty: field.ty.clone()
+            });
+        }
+    }
 
-    // Combine
+    // 3. Code Generation
+    let impl_visitor = generate_visitor(&name, &remotes, &locals);
+    let impl_job = generate_serialization_job(&name, &locals);
+    let impl_native = generate_native_reader(&name, &locals, &remotes);
+
+    // 4. Expansion
     let expanded = quote! {
-        #visit_impl
-        #job_impl
+        #impl_visitor
+        #impl_job
+        #impl_native
     };
 
     TokenStream::from(expanded)
 }
 
-struct ChunkableField {
+// --- Internal Data Structures ---
+
+struct LocalField {
     ident: syn::Ident,
-    // We could store compression settings here later
+    #[allow(dead_code)] ty: syn::Type,
 }
 
-fn get_chunkable_fields(data: &Data) -> Vec<ChunkableField> {
-    let mut fields_found = Vec::new();
+struct RemoteField {
+    ident: syn::Ident,
+    ty: syn::Type,
+    compression_id: u8,
+}
 
-    if let Data::Struct(data_struct) = data {
-        if let Fields::Named(fields_named) = &data_struct.fields {
-            for field in &fields_named.named {
-                let mut is_chunkable = false;
-                for attr in &field.attrs {
-                    if attr.path.is_ident("parcode") {
-                         if let Ok(Meta::List(list)) = attr.parse_meta() {
-                             for nested in list.nested {
-                                 if let NestedMeta::Meta(Meta::Path(path)) = nested {
-                                     if path.is_ident("chunkable") {
-                                         is_chunkable = true;
-                                     }
-                                 }
-                             }
-                         }
-                    }
+// --- Parsing Logic (Syn 2.0) ---
+
+/// Parses `#[parcode(...)]` attributes.
+/// Returns `(is_chunkable, compression_id)`.
+fn parse_attributes(attrs: &[Attribute]) -> syn::Result<(bool, u8)> {
+    let mut is_chunkable = false;
+    let mut compression_id = 0;
+
+    for attr in attrs {
+        if attr.path().is_ident("parcode") {
+            // Use parse_nested_meta to iterate over comma-separated arguments
+            attr.parse_nested_meta(|meta| {
+                // Case: #[parcode(chunkable)]
+                if meta.path.is_ident("chunkable") {
+                    is_chunkable = true;
+                    return Ok(());
                 }
                 
-                if is_chunkable {
-                    if let Some(ident) = &field.ident {
-                        fields_found.push(ChunkableField { ident: ident.clone() });
-                    }
+                // Case: #[parcode(compression = "lz4")]
+                if meta.path.is_ident("compression") {
+                    let value = meta.value()?; // Expects ' = '
+                    let s: LitStr = value.parse()?; // Expects string literal
+                    
+                    compression_id = match s.value().to_lowercase().as_str() {
+                        "lz4" => 1,
+                        "zstd" => 2, // Reserved
+                        "none" => 0,
+                        _ => return Err(meta.error("Unknown compression algorithm. Supported: 'lz4', 'none'")),
+                    };
+                    return Ok(());
                 }
-            }
+
+                // Error on unknown keys
+                Err(meta.error("Unknown parcode attribute key"))
+            })?;
         }
     }
-    fields_found
+    Ok((is_chunkable, compression_id))
 }
 
-fn impl_visitor(name: &syn::Ident, chunkables: &[ChunkableField]) -> proc_macro2::TokenStream {
-    let recurse_calls = chunkables.iter().map(|f| {
+// --- Generator: ParcodeVisitor ---
+
+fn generate_visitor(name: &syn::Ident, remotes: &[RemoteField], _locals: &[LocalField]) -> proc_macro2::TokenStream {
+    let visit_children = remotes.iter().map(|f| {
         let fname = &f.ident;
+        let cid = f.compression_id;
+        
+        // Generate Config Struct if needed
+        let config_expr = if cid > 0 {
+            quote! { Some(parcode::graph::JobConfig { compression_id: #cid }) }
+        } else {
+            quote! { None }
+        };
+
         quote! {
-            self.#fname.visit(graph, Some(my_id));
+            self.#fname.visit(graph, Some(my_id), #config_expr);
         }
     });
 
     quote! {
         impl parcode::visitor::ParcodeVisitor for #name {
-            fn visit(&self, graph: &mut parcode::graph::TaskGraph, parent_id: Option<parcode::graph::ChunkId>) {
-                // 1. Create Job for self
-                let job = self.create_job();
-                
-                // 2. Add to graph
+            fn visit(&self, graph: &mut parcode::graph::TaskGraph, parent_id: Option<parcode::graph::ChunkId>, config_override: Option<parcode::graph::JobConfig>) {
+                // 1. Create Job for Self (applies override if passed from parent)
+                let job = self.create_job(config_override);
                 let my_id = graph.add_node(job);
                 
-                // 3. Link to parent
+                // 2. Link to Parent
                 if let Some(pid) = parent_id {
                     graph.link_parent_child(pid, my_id);
                 }
                 
-                // 4. Recurse children
-                #(#recurse_calls)*
+                // 3. Visit Children (Remote Fields)
+                #(#visit_children)*
             }
-            
-            fn create_job(&self) -> Box<dyn parcode::graph::SerializationJob> {
-                // We clone self to move it into the Job Box. 
-                // Assumption: User structs must be Clone for the prototype simplifiction.
-                // In prod, we might use Arc or specific references to avoid deep clones of non-chunkable data.
-                Box::new(self.clone())
+
+            fn create_job(&self, config_override: Option<parcode::graph::JobConfig>) -> Box<dyn parcode::graph::SerializationJob> {
+                let base_job = Box::new(self.clone());
+                
+                // Wrap with Runtime Config if needed
+                if let Some(cfg) = config_override {
+                    Box::new(parcode::rt::ConfiguredJob::new(base_job, cfg))
+                } else {
+                    base_job
+                }
             }
         }
     }
 }
 
-fn impl_serialization_job(name: &syn::Ident, chunkables: &[ChunkableField]) -> proc_macro2::TokenStream {
-    // This is the tricky part: Custom Serialization.
-    // We need to tell serde to skip the actual field and write a placeholder?
-    // Or better: The `execute` method manually constructs a "Proxy Struct" that matches
-    // the user struct but replaces Chunkable fields with `ChildRef` or nothing (since refs go to footer).
-    
-    // STRATEGY FOR V1:
-    // We use a "Shadow Struct".
-    // User Struct: { a: i32, b: Vec<i32> }
-    // Shadow Struct: { a: i32 } (b is ignored because it lives in children chunks).
-    // The `execute` function serializes the Shadow Struct.
-    
-    let shadow_name = syn::Ident::new(&format!("{}ParcodeShadow", name), name.span());
-    
-    // TODO: Generate Shadow Struct definition filtering out chunkable fields 
-    // (or replacing them with markers if needed for schema evolution).
-    
-    // For simplicity in this prompt response, we will use Bincode's Default behavior 
-    // but we need `#[serde(skip)]` on chunkable fields effectively during this pass.
-    // Since we can't easily inject attributes into the user's struct dynamically at runtime, 
-    // The robust way is to implement a custom Serialize for the type wrapper.
+// --- Generator: SerializationJob ---
 
-    // Placeholder implementation:
+fn generate_serialization_job(name: &syn::Ident, locals: &[LocalField]) -> proc_macro2::TokenStream {
+    let serialize_stmts = locals.iter().map(|f| {
+        let fname = &f.ident;
+        // Use internal re-export to avoid dependency issues in user crate
+        quote! {
+            parcode::internal::bincode::serde::encode_into_std_write(
+                &self.#fname, 
+                &mut writer, 
+                parcode::internal::bincode::config::standard()
+            ).map_err(|e| parcode::ParcodeError::Serialization(e.to_string()))?;
+        }
+    });
+
     quote! {
         impl parcode::graph::SerializationJob for #name {
-             fn execute(&self, children_refs: &[parcode::format::ChildRef]) -> parcode::Result<Vec<u8>> {
-                 // 1. Serialize the "Literal" parts of this struct.
-                 // PROBLEM: We need to serialize everything EXCEPT the fields marked chunkable.
-                 // We can use a macro-generated helper struct that borrows fields.
-                 
-                 #[derive(serde::Serialize)]
-                 struct #shadow_name<'a> {
-                     // Iterate ALL fields. If in `chunkables`, skip or use placeholder?
-                     // If we skip, how do we reconstruct on read?
-                     // ANSWER: On read, we read the literal part, then manually populate the chunkable fields from children.
-                     
-                     // This requires generating the struct fields here.
-                     // Complexity Alert: This requires full reflection of fields in the macro.
-                 }
-                 
-                 // For this phase, let's assume we simply return bincode::serialize(&self)
-                 // BUT we need to zero-out or skip the chunkable vectors to avoid double writing.
-                 
-                 // Temporary Prod Solution: 
-                 // Use a wrapper during serialization that uses `serde(skip)` behavior via a remote type or manual implementation.
-                 
-                 // Returning empty vec for now to signal this logic is pending precise implementation detail
-                 // which depends on how strictly we want to enforce Schema.
-                 Ok(bincode::serde::encode_to_vec(self, bincode::config::standard())
-                    .map_err(|e| parcode::ParcodeError::Serialization(e.to_string()))?)
-             }
+            fn execute(&self, _children_refs: &[parcode::format::ChildRef]) -> parcode::Result<Vec<u8>> {
+                let mut buffer = Vec::new();
+                // Use BufWriter for efficiency
+                let mut writer = std::io::BufWriter::new(&mut buffer);
+                
+                // Serialize ONLY local fields
+                #(#serialize_stmts)*
+                
+                use std::io::Write;
+                writer.flush()?;
+                drop(writer);
+                
+                Ok(buffer)
+            }
 
-             fn estimated_size(&self) -> usize {
-                 std::mem::size_of::<Self>() // Rough estimate
-             }
+            fn estimated_size(&self) -> usize {
+                std::mem::size_of::<Self>()
+            }
 
-             fn as_any(&self) -> &dyn std::any::Any {
-                 self
-             }
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+        }
+    }
+}
+
+// --- Generator: ParcodeNative (Reader) ---
+
+fn generate_native_reader(name: &syn::Ident, locals: &[LocalField], remotes: &[RemoteField]) -> proc_macro2::TokenStream {
+    // 1. Read Local Fields (Must match serialization order)
+    let read_locals = locals.iter().map(|f| {
+        let fname = &f.ident;
+        let fty = &f.ty;
+        quote! {
+            let #fname: #fty = parcode::internal::bincode::serde::decode_from_std_read(
+                &mut reader, 
+                parcode::internal::bincode::config::standard()
+            ).map_err(|e| parcode::ParcodeError::Serialization(e.to_string()))?;
+        }
+    });
+
+    // 2. Read Remote Fields (Must match visit order)
+    let read_remotes = remotes.iter().map(|f| {
+        let fname = &f.ident;
+        let fty = &f.ty;
+        quote! {
+            let child_node = child_iter.next().ok_or_else(|| 
+                parcode::ParcodeError::Format(format!("Missing child chunk for field '{}'", stringify!(#fname)))
+            )?;
+            let #fname: #fty = parcode::reader::ParcodeNative::from_node(&child_node)?;
+        }
+    });
+
+    // Collect all field names for struct initialization
+    let mut field_names = Vec::new();
+    for f in locals { field_names.push(&f.ident); }
+    for f in remotes { field_names.push(&f.ident); }
+
+    quote! {
+        impl parcode::reader::ParcodeNative for #name {
+            fn from_node(node: &parcode::reader::ChunkNode<'_>) -> parcode::Result<Self> {
+                // A. Read Payload
+                let payload = node.read_raw()?;
+                let mut reader = std::io::Cursor::new(payload);
+
+                // B. Decode Locals
+                #(#read_locals)*
+
+                // C. Get Children
+                let children = node.children()?;
+                let mut child_iter = children.into_iter();
+
+                // D. Decode Remotes
+                #(#read_remotes)*
+
+                // E. Assemble
+                Ok(Self {
+                    #(#field_names),*
+                })
+            }
         }
     }
 }

@@ -1,6 +1,5 @@
-#[cfg(feature = "lz4_flex")]
-use crate::compression::Lz4Compressor;
-use crate::compression::{Compressor, NoCompression};
+//! PLACEHOLDER
+
 use crate::error::Result;
 use crate::executor::execute_graph;
 use crate::format::GlobalHeader;
@@ -57,24 +56,17 @@ impl Parcode {
     {
         let path = path.as_ref();
         let mut graph = TaskGraph::new();
-        root_object.visit(&mut graph, None);
+        
+        // Visit inicial con Config Default (None)
+        root_object.visit(&mut graph, None, None);
 
         let writer = SeqWriter::create(path)?;
+        
+        // Instanciamos el Registro con los defaults del sistema
+        let registry = crate::compression::CompressorRegistry::new();
 
-        let compressor: Box<dyn Compressor> = if self.use_compression {
-            #[cfg(feature = "lz4_flex")]
-            {
-                Box::new(Lz4Compressor)
-            }
-            #[cfg(not(feature = "lz4_flex"))]
-            {
-                Box::new(NoCompression)
-            }
-        } else {
-            Box::new(NoCompression)
-        };
-
-        let root_child_ref = execute_graph(&graph, &writer, compressor.as_ref())?;
+        // Ejecutamos
+        let root_child_ref = execute_graph(&graph, &writer, &registry)?;
 
         let header = GlobalHeader::new(root_child_ref.offset, root_child_ref.length);
         writer.write_all(&header.to_bytes())?;
