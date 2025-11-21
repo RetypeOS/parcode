@@ -2,11 +2,11 @@
 //!
 //! Handles the transformation of raw byte buffers into compressed chunks.
 
+use crate::error::{ParcodeError, Result};
 use std::borrow::Cow;
-use crate::error::{Result, ParcodeError};
 
 /// Threshold in bytes. (Removed logic usage, kept for reference or future smart heuristics outside the impl)
-#[allow(dead_code)] 
+#[allow(dead_code)]
 const MIN_COMPRESSION_THRESHOLD: usize = 64;
 
 /// Interface for compression algorithms.
@@ -29,7 +29,9 @@ pub trait Compressor: Send + Sync + std::fmt::Debug {
 pub struct NoCompression;
 
 impl Compressor for NoCompression {
-    fn id(&self) -> u8 { 0 }
+    fn id(&self) -> u8 {
+        0
+    }
 
     fn compress<'a>(&self, data: &'a [u8]) -> Result<Cow<'a, [u8]>> {
         // Zero-copy: return reference to input
@@ -51,13 +53,15 @@ pub struct Lz4Compressor;
 
 #[cfg(feature = "lz4_flex")]
 impl Compressor for Lz4Compressor {
-    fn id(&self) -> u8 { 1 }
+    fn id(&self) -> u8 {
+        1
+    }
 
     fn compress<'a>(&self, data: &'a [u8]) -> Result<Cow<'a, [u8]>> {
         // FIX CRÍTICO: Eliminada la optimización de retorno temprano para datos pequeños.
         // Si el Executor pide ID 1, debemos devolver formato LZ4 válido siempre.
         // De lo contrario, el Reader intentará descomprimir datos crudos y fallará.
-        
+
         let compressed = lz4_flex::compress_prepend_size(data);
         Ok(Cow::Owned(compressed))
     }
@@ -111,7 +115,10 @@ impl CompressorRegistry {
                 return Ok(algo.as_ref());
             }
         }
-        Err(ParcodeError::Compression(format!("Algorithm ID {} is not registered or available", id)))
+        Err(ParcodeError::Compression(format!(
+            "Algorithm ID {} is not registered or available",
+            id
+        )))
     }
 }
 

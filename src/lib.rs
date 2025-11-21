@@ -1,29 +1,29 @@
 //! # Parcode V3
-//! 
+//!
 //! A high-performance, graph-based serialization library for Rust.
 
-#![deny(unsafe_code)] 
+#![deny(unsafe_code)]
 #![deny(clippy::unwrap_used)]
 #![deny(clippy::panic)]
 #![warn(missing_docs)]
 
+pub mod api;
 pub mod compression;
 pub mod error;
-pub mod format;
-pub mod io;
-pub mod visitor;
-pub mod graph;
 pub mod executor;
-pub mod api;
+pub mod format;
+pub mod graph;
+pub mod io;
 pub mod reader;
+pub mod visitor;
 
-mod visitor_impls; 
+mod visitor_impls;
 
 // --- MÓDULOS DE SOPORTE PARA LA MACRO ---
 
 /// Runtime utilities used by the derived code.
 #[doc(hidden)]
-pub mod rt; 
+pub mod rt;
 
 /// Internal re-exports for the macro to ensure dependencies are available.
 #[doc(hidden)]
@@ -34,12 +34,12 @@ pub mod internal {
 
 // --- RE-EXPORTS ---
 
-pub use compression::{Compressor, NoCompression};
 #[cfg(feature = "lz4_flex")]
 pub use compression::Lz4Compressor;
+pub use compression::{Compressor, NoCompression};
 
-pub use error::{ParcodeError, Result};
 pub use api::Parcode;
+pub use error::{ParcodeError, Result};
 pub use reader::ParcodeReader;
 
 // --- LA PIEZA FALTANTE ---

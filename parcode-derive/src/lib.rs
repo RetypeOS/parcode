@@ -140,24 +140,23 @@ fn generate_visitor(name: &syn::Ident, remotes: &[RemoteField], _locals: &[Local
 
     quote! {
         impl parcode::visitor::ParcodeVisitor for #name {
-            fn visit(&self, graph: &mut parcode::graph::TaskGraph, parent_id: Option<parcode::graph::ChunkId>, config_override: Option<parcode::graph::JobConfig>) {
-                // 1. Create Job for Self (applies override if passed from parent)
+            fn visit<'a>(&'a self, graph: &mut parcode::graph::TaskGraph<'a>, parent_id: Option<parcode::graph::ChunkId>, config_override: Option<parcode::graph::JobConfig>) {
+                // 1. Create Job for Self
                 let job = self.create_job(config_override);
                 let my_id = graph.add_node(job);
                 
-                // 2. Link to Parent
+                // 2. Link
                 if let Some(pid) = parent_id {
                     graph.link_parent_child(pid, my_id);
                 }
                 
-                // 3. Visit Children (Remote Fields)
+                // 3. Children
                 #(#visit_children)*
             }
 
-            fn create_job(&self, config_override: Option<parcode::graph::JobConfig>) -> Box<dyn parcode::graph::SerializationJob> {
+            fn create_job<'a>(&'a self, config_override: Option<parcode::graph::JobConfig>) -> Box<dyn parcode::graph::SerializationJob<'a> + 'a> {
                 let base_job = Box::new(self.clone());
                 
-                // Wrap with Runtime Config if needed
                 if let Some(cfg) = config_override {
                     Box::new(parcode::rt::ConfiguredJob::new(base_job, cfg))
                 } else {
@@ -184,7 +183,7 @@ fn generate_serialization_job(name: &syn::Ident, locals: &[LocalField]) -> proc_
     });
 
     quote! {
-        impl parcode::graph::SerializationJob for #name {
+        impl<'a> parcode::graph::SerializationJob<'a> for #name {
             fn execute(&self, _children_refs: &[parcode::format::ChildRef]) -> parcode::Result<Vec<u8>> {
                 let mut buffer = Vec::new();
                 // Use BufWriter for efficiency
@@ -202,10 +201,6 @@ fn generate_serialization_job(name: &syn::Ident, locals: &[LocalField]) -> proc_
 
             fn estimated_size(&self) -> usize {
                 std::mem::size_of::<Self>()
-            }
-
-            fn as_any(&self) -> &dyn std::any::Any {
-                self
             }
         }
     }

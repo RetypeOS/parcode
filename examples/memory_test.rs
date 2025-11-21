@@ -6,16 +6,16 @@
 #![allow(unsafe_code)]
 
 use parcode::{
-    Parcode, ParcodeReader,
-    visitor::ParcodeVisitor,
-    graph::{TaskGraph, ChunkId, SerializationJob, JobConfig},
+    Parcode, ParcodeError, ParcodeReader, Result,
     format::ChildRef,
-    reader::{ParcodeNative, ChunkNode},
-    Result, ParcodeError
+    graph::{ChunkId, JobConfig, SerializationJob, TaskGraph},
+    reader::{ChunkNode, ParcodeNative},
+    visitor::ParcodeVisitor,
 };
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
+use std::hint::black_box;
 use std::io::{BufReader, BufWriter};
 use std::{
     alloc::{GlobalAlloc, Layout, System},
@@ -23,7 +23,6 @@ use std::{
     time::Instant,
 };
 use tempfile::tempdir;
-use std::hint::black_box;
 
 // ============================================================================
 // 1. MEMORY ALLOCATOR PROFILER
@@ -53,7 +52,7 @@ impl<A: GlobalAlloc> ProfilingAllocator<A> {
     fn peak(&self) -> usize {
         self.peak.load(Ordering::SeqCst)
     }
-    
+
     fn current(&self) -> usize {
         self.allocated.load(Ordering::SeqCst)
     }
@@ -62,7 +61,9 @@ impl<A: GlobalAlloc> ProfilingAllocator<A> {
 unsafe impl<A: GlobalAlloc> GlobalAlloc for ProfilingAllocator<A> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let ptr: *mut u8;
-        unsafe {ptr = self.inner.alloc(layout);}
+        unsafe {
+            ptr = self.inner.alloc(layout);
+        }
         if !ptr.is_null() {
             let current = self.allocated.fetch_add(layout.size(), Ordering::SeqCst) + layout.size();
             self.peak.fetch_max(current, Ordering::SeqCst);
@@ -72,7 +73,9 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for ProfilingAllocator<A> {
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         self.allocated.fetch_sub(layout.size(), Ordering::SeqCst);
-        unsafe {self.inner.dealloc(ptr, layout);}
+        unsafe {
+            self.inner.dealloc(ptr, layout);
+        }
     }
 }
 
@@ -89,14 +92,19 @@ struct ComplexItem {
     name: String,
     // Simulates binary blobs (textures, buffers)
     #[serde(with = "serde_bytes")]
-    payload: Vec<u8>, 
+    payload: Vec<u8>,
     tags: HashMap<String, String>,
 }
 
 // --- MANUAL IMPL (Simulating what the Macro will generate) ---
 
 impl ParcodeVisitor for ComplexItem {
-    fn visit(&self, graph: &mut TaskGraph, parent_id: Option<ChunkId>, config_override: Option<JobConfig>) {
+    fn visit<'a>(
+        &'a self,
+        graph: &mut TaskGraph<'a>,
+        parent_id: Option<ChunkId>,
+        config_override: Option<JobConfig>,
+    ) {
         // Logic: If root or inside a collection, create a node.
         // This simulates a "Heavy Leaf" that doesn't split further.
         if parent_id.is_none() {
@@ -105,7 +113,10 @@ impl ParcodeVisitor for ComplexItem {
         }
     }
 
-    fn create_job(&self, config_override: Option<JobConfig>) -> Box<dyn SerializationJob> {
+    fn create_job<'a>(
+        &'a self,
+        config_override: Option<JobConfig>,
+    ) -> Box<dyn SerializationJob<'a> + 'a> {
         let base = Box::new(self.clone());
         // Apply config override (e.g. Compression) if provided by parent/macro
         if let Some(cfg) = config_override {
@@ -116,16 +127,15 @@ impl ParcodeVisitor for ComplexItem {
     }
 }
 
-impl SerializationJob for ComplexItem {
+impl SerializationJob<'_> for ComplexItem {
     fn execute(&self, _: &[ChildRef]) -> Result<Vec<u8>> {
         // Low-level serialization using Bincode
         bincode::serde::encode_to_vec(self, bincode::config::standard())
             .map_err(|e| ParcodeError::Serialization(e.to_string()))
     }
     fn estimated_size(&self) -> usize {
-        self.payload.len() + 200 
+        self.payload.len() + 200
     }
-    fn as_any(&self) -> &dyn std::any::Any { self }
 }
 
 impl ParcodeNative for ComplexItem {
@@ -141,14 +151,20 @@ impl ParcodeNative for ComplexItem {
 struct Lz4Compressed<T>(pub T);
 
 impl<T: ParcodeVisitor> ParcodeVisitor for Lz4Compressed<T> {
-    fn visit(&self, graph: &mut TaskGraph, parent_id: Option<ChunkId>, _config_override: Option<JobConfig>) {
+    fn visit<'a>(
+        &'a self,
+        graph: &mut TaskGraph<'a>,
+        parent_id: Option<ChunkId>,
+        _config_override: Option<JobConfig>,
+    ) {
         // FORCE LZ4 Config (ID 1)
         let lz4_config = JobConfig { compression_id: 1 };
-        
-        // Delegate to inner, but passing the Forced Config
+
+        // Delegate to inner
         self.0.visit(graph, parent_id, Some(lz4_config));
     }
-    fn create_job(&self, _config: Option<JobConfig>) -> Box<dyn SerializationJob> {
+
+    fn create_job<'a>(&'a self, _config: Option<JobConfig>) -> Box<dyn SerializationJob<'a> + 'a> {
         panic!("Wrapper should not create job directly in this example usage");
     }
 }
@@ -160,16 +176,20 @@ impl<T: ParcodeVisitor> ParcodeVisitor for Lz4Compressed<T> {
 fn generate_dataset(count: usize) -> Vec<ComplexItem> {
     print!(" -> Generating {} items... ", count);
     let start = Instant::now();
-    let data = (0..count).map(|i| {
-        // Varied payload size to test fragmentation
-        let size = (i % 1024) + 128; 
-        ComplexItem {
-            id: i as u64,
-            name: format!("asset_{:08}", i),
-            payload: vec![((i * 3) % 255) as u8; size],
-            tags: (0..3).map(|j| (format!("meta_{}", j), format!("val_{}", i+j))).collect(),
-        }
-    }).collect();
+    let data = (0..count)
+        .map(|i| {
+            // Varied payload size to test fragmentation
+            let size = (i % 1024) + 128;
+            ComplexItem {
+                id: i as u64,
+                name: format!("asset_{:08}", i),
+                payload: vec![((i * 3) % 255) as u8; size],
+                tags: (0..3)
+                    .map(|j| (format!("meta_{}", j), format!("val_{}", i + j)))
+                    .collect(),
+            }
+        })
+        .collect();
     println!("Done in {:.2?}", start.elapsed());
     data
 }
@@ -179,7 +199,7 @@ fn generate_dataset(count: usize) -> Vec<ComplexItem> {
 // ============================================================================
 
 fn main() -> anyhow::Result<()> {
-    const ITEM_COUNT: usize = 200_000; 
+    const ITEM_COUNT: usize = 200_000;
     // Approx size: 200k * ~600 bytes = ~120 MB raw data
 
     let dir = tempdir()?;
@@ -188,12 +208,15 @@ fn main() -> anyhow::Result<()> {
     let path_bincode = dir.path().join("data.bin");
 
     println!("\n=== PARCODE V3 MEMORY & PERFORMANCE PROFILING ===\n");
-    
+
     // 1. SETUP
     ALLOCATOR.reset();
     let data = generate_dataset(ITEM_COUNT);
     let gen_mem = ALLOCATOR.current();
-    println!(" -> Dataset Memory Footprint: {:.2} MB\n", gen_mem as f64 / 1024.0 / 1024.0);
+    println!(
+        " -> Dataset Memory Footprint: {:.2} MB\n",
+        gen_mem as f64 / 1024.0 / 1024.0
+    );
 
     // ------------------------------------------------------------------------
     // PHASE 1: WRITE
@@ -208,27 +231,33 @@ fn main() -> anyhow::Result<()> {
         let dur = start.elapsed();
         let peak = ALLOCATOR.peak() as f64 / 1_048_576.0;
         let size = std::fs::metadata(&path_parcode_raw)?.len() as f64 / 1_048_576.0;
-        
-        println!("[Parcode Raw]    Time: {:.2?}, Peak RAM: {:.2} MB, Disk: {:.2} MB", dur, peak, size);
+
+        println!(
+            "[Parcode Raw]    Time: {:.2?}, Peak RAM: {:.2} MB, Disk: {:.2} MB",
+            dur, peak, size
+        );
     }
 
     // B. Parcode (Simulated LZ4 Config via Wrapper)
     {
         // Wrap the data to force LZ4 injection
-        let wrapped_data = Lz4Compressed(&data); 
-        
+        let wrapped_data = Lz4Compressed(&data);
+
         ALLOCATOR.reset();
         let start = Instant::now();
-        
+
         // We save the wrapper. The wrapper's visit() forces LZ4 on the Vec.
         // Note: Parcode::save takes &T.
         Parcode::save(&path_parcode_lz4, &wrapped_data)?;
-        
+
         let dur = start.elapsed();
         let peak = ALLOCATOR.peak() as f64 / 1_048_576.0;
         let size = std::fs::metadata(&path_parcode_lz4)?.len() as f64 / 1_048_576.0;
-        
-        println!("[Parcode LZ4]    Time: {:.2?}, Peak RAM: {:.2} MB, Disk: {:.2} MB", dur, peak, size);
+
+        println!(
+            "[Parcode LZ4]    Time: {:.2?}, Peak RAM: {:.2} MB, Disk: {:.2} MB",
+            dur, peak, size
+        );
     }
 
     // C. Bincode (Baseline)
@@ -242,7 +271,10 @@ fn main() -> anyhow::Result<()> {
         let peak = ALLOCATOR.peak() as f64 / 1_048_576.0;
         let size = std::fs::metadata(&path_bincode)?.len() as f64 / 1_048_576.0;
 
-        println!("[Bincode Baseline] Time: {:.2?}, Peak RAM: {:.2} MB, Disk: {:.2} MB", dur, peak, size);
+        println!(
+            "[Bincode Baseline] Time: {:.2?}, Peak RAM: {:.2} MB, Disk: {:.2} MB",
+            dur, peak, size
+        );
     }
 
     // ------------------------------------------------------------------------
@@ -258,8 +290,11 @@ fn main() -> anyhow::Result<()> {
         black_box(loaded.len());
         let dur = start.elapsed();
         let peak = ALLOCATOR.peak() as f64 / 1_048_576.0;
-        
-        println!("[Parcode Stitching] Time: {:.2?}, Peak RAM: {:.2} MB (Zero-Copy Assembly)", dur, peak);
+
+        println!(
+            "[Parcode Stitching] Time: {:.2?}, Peak RAM: {:.2} MB (Zero-Copy Assembly)",
+            dur, peak
+        );
         assert_eq!(loaded.len(), ITEM_COUNT);
     }
 
@@ -269,12 +304,16 @@ fn main() -> anyhow::Result<()> {
         let start = Instant::now();
         let file = File::open(&path_bincode)?;
         let mut reader = BufReader::new(file);
-        let loaded: Vec<ComplexItem> = bincode::serde::decode_from_std_read(&mut reader, bincode::config::standard())?;
+        let loaded: Vec<ComplexItem> =
+            bincode::serde::decode_from_std_read(&mut reader, bincode::config::standard())?;
         black_box(loaded.len());
         let dur = start.elapsed();
         let peak = ALLOCATOR.peak() as f64 / 1_048_576.0;
-        
-        println!("[Bincode Standard]  Time: {:.2?}, Peak RAM: {:.2} MB", dur, peak);
+
+        println!(
+            "[Bincode Standard]  Time: {:.2?}, Peak RAM: {:.2} MB",
+            dur, peak
+        );
     }
 
     // ------------------------------------------------------------------------
@@ -287,7 +326,7 @@ fn main() -> anyhow::Result<()> {
         let start = Instant::now();
         let reader = ParcodeReader::open(&path_parcode_lz4)?; // Reading the compressed one!
         let root = reader.root()?;
-        
+
         let mut count = 0;
         // Using the low-level iterator
         for item in root.iter::<ComplexItem>()? {
@@ -295,10 +334,13 @@ fn main() -> anyhow::Result<()> {
             count += 1;
             black_box(obj.id);
         }
-        
+
         let dur = start.elapsed();
         let peak = ALLOCATOR.peak() as f64 / 1_048_576.0;
-        println!("[Parcode Iterator]  Time: {:.2?}, Peak RAM: {:.2} MB (LZ4 Decompression on fly)", dur, peak);
+        println!(
+            "[Parcode Iterator]  Time: {:.2?}, Peak RAM: {:.2} MB (LZ4 Decompression on fly)",
+            dur, peak
+        );
         assert_eq!(count, ITEM_COUNT);
     }
 
@@ -306,13 +348,13 @@ fn main() -> anyhow::Result<()> {
     // PHASE 4: RANDOM ACCESS
     // ------------------------------------------------------------------------
     println!("\n--- PHASE 4: RANDOM ACCESS ---");
-    
+
     {
         ALLOCATOR.reset();
         let start = Instant::now();
         let reader = ParcodeReader::open(&path_parcode_raw)?;
         let root = reader.root()?;
-        
+
         // Access 10 random items spread across the dataset
         for i in 0..10 {
             let idx = (i * 12345) % ITEM_COUNT;
@@ -322,7 +364,10 @@ fn main() -> anyhow::Result<()> {
 
         let dur = start.elapsed();
         let peak = ALLOCATOR.peak() as f64 / 1_048_576.0;
-        println!("[Parcode Random]    Time: {:.2?}, Peak RAM: {:.2} MB (10 lookups)", dur, peak);
+        println!(
+            "[Parcode Random]    Time: {:.2?}, Peak RAM: {:.2} MB (10 lookups)",
+            dur, peak
+        );
     }
 
     println!("\nDone.");
