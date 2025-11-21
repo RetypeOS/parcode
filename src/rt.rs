@@ -1,37 +1,36 @@
 //! Runtime utilities for generated code (Macros).
 //! Do not use directly.
 
-use crate::graph::{SerializationJob, JobConfig};
-use crate::format::ChildRef;
 use crate::Result;
-use std::any::Any;
+use crate::format::ChildRef;
+use crate::graph::{JobConfig, SerializationJob};
+use std::marker::PhantomData;
 
-/// Wrapper que inyecta configuración a un Job existente.
-/// Usado por la macro para aplicar atributos #[parcode(compression=...)]
+/// Wrapper that injects configuration into an existing Job.
 #[derive(Debug)]
-pub struct ConfiguredJob<J: ?Sized> {
+pub struct ConfiguredJob<'a, J: ?Sized> {
     config: JobConfig,
     inner: Box<J>,
+    _marker: PhantomData<&'a ()>,
 }
 
-impl<J: SerializationJob + ?Sized> ConfiguredJob<J> {
-    /// PLACEHOLDER
+impl<'a, J: SerializationJob<'a> + ?Sized> ConfiguredJob<'a, J> {
     pub fn new(inner: Box<J>, config: JobConfig) -> Self {
-        Self { inner, config }
+        Self {
+            inner,
+            config,
+            _marker: PhantomData,
+        }
     }
 }
 
-impl<J: SerializationJob + ?Sized> SerializationJob for ConfiguredJob<J> {
+impl<'a, J: SerializationJob<'a> + ?Sized> SerializationJob<'a> for ConfiguredJob<'a, J> {
     fn execute(&self, children_refs: &[ChildRef]) -> Result<Vec<u8>> {
         self.inner.execute(children_refs)
     }
 
     fn estimated_size(&self) -> usize {
         self.inner.estimated_size()
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self.inner.as_any()
     }
 
     fn config(&self) -> JobConfig {

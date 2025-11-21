@@ -14,19 +14,16 @@ use crate::graph::{Node, TaskGraph};
 use crate::io::SeqWriter;
 
 /// Context shared among all worker threads.
-struct ExecutionContext<'a> {
-    graph: &'a TaskGraph,
-    writer: &'a SeqWriter,
-    registry: &'a CompressorRegistry,
-    /// Flags if a fatal error occurred, signaling all threads to stop early.
+struct ExecutionContext<'a, 'graph> {
+    graph: &'graph TaskGraph<'a>, // The graph holds data living for 'a
+    writer: &'graph SeqWriter,
+    registry: &'graph CompressorRegistry,
     abort_flag: AtomicBool,
-    /// Captures the first error encountered for reporting.
     error_capture: Mutex<Option<ParcodeError>>,
-    /// Stores the final result of the Root node (Offset, Length).
     root_result: Mutex<Option<ChildRef>>,
 }
 
-impl<'a> ExecutionContext<'a> {
+impl<'a, 'graph> ExecutionContext<'a, 'graph> {
     fn signal_error(&self, err: ParcodeError) {
         let mut guard = self.error_capture.lock().unwrap_or_else(|p| p.into_inner());
         if guard.is_none() {
@@ -49,10 +46,10 @@ impl<'a> ExecutionContext<'a> {
 ///
 /// This function consumes the graph (conceptually) and drives the I/O writing process.
 /// It returns the `ChildRef` of the Root Chunk, which is needed to write the Global Header.
-pub fn execute_graph(
-    graph: &TaskGraph,
+pub fn execute_graph<'a>(
+    graph: &TaskGraph<'a>,
     writer: &SeqWriter,
-    registry: &CompressorRegistry, 
+    registry: &CompressorRegistry,
 ) -> Result<ChildRef> {
     // 1. Setup the shared context.
     let ctx = ExecutionContext {
@@ -66,7 +63,7 @@ pub fn execute_graph(
 
     // 2. Identify initial leaves (Nodes with 0 dependencies).
     // These are the spark plugs that start the engine.
-    let leaves: Vec<&Node> = graph
+    let leaves: Vec<&Node<'a>> = graph
         .nodes()
         .iter()
         .filter(|n| n.atomic_deps.load(Ordering::SeqCst) == 0)
@@ -81,9 +78,7 @@ pub fn execute_graph(
     // 3. Launch the Rayon Scope.
     // The scope ensures all spawned threads complete before this block exits.
     rayon::scope(|s| {
-        let ctx_ref = &ctx; // Reference to context to share across threads
-
-        // Spawn initial tasks
+        let ctx_ref = &ctx;
         for leaf in leaves {
             s.spawn(move |s| process_node(s, ctx_ref, leaf));
         }
@@ -104,18 +99,17 @@ pub fn execute_graph(
         .lock()
         .map_err(|_| ParcodeError::Internal("Root result mutex poisoned".into()))?;
 
-    root_guard.clone().ok_or_else(|| {
-        // ChildRef is Copy/Clone
-        ParcodeError::Internal("Graph execution incomplete".into())
-    })
+    root_guard
+        .clone()
+        .ok_or_else(|| ParcodeError::Internal("Graph execution incomplete".into()))
 }
 
 /// The worker function executed by Rayon threads.
 /// It handles Serialization -> Compression -> Writing -> Notification.
-fn process_node<'scope>(
+fn process_node<'scope, 'a>(
     scope: &rayon::Scope<'scope>,
-    ctx: &'scope ExecutionContext<'scope>,
-    node: &'scope Node,
+    ctx: &'scope ExecutionContext<'a, 'scope>,
+    node: &'scope Node<'a>,
 ) {
     // 0. Fast abort check
     if ctx.should_abort() {
@@ -129,7 +123,6 @@ fn process_node<'scope>(
             .completed_children
             .lock()
             .map_err(|_| ParcodeError::Internal("Node mutex poisoned".into()));
-
         match lock {
             Ok(mut guard) => std::mem::take(&mut *guard),
             Err(e) => {
@@ -166,17 +159,23 @@ fn process_node<'scope>(
 
     // 1. Obtener Config del Job
     let config = node.job.config();
-    
+
     // 2. Buscar Algoritmo
     let compressor = match ctx.registry.get(config.compression_id) {
         Ok(c) => c,
-        Err(e) => { ctx.signal_error(e); return; }
+        Err(e) => {
+            ctx.signal_error(e);
+            return;
+        }
     };
-    
+
     // 3. Comprimir
     let compressed_payload = match compressor.compress(&raw_payload) {
         Ok(c) => c,
-        Err(e) => { ctx.signal_error(e); return; }
+        Err(e) => {
+            ctx.signal_error(e);
+            return;
+        }
     };
 
     // --- STEP 3: FORMATTING (CPU BOUND) ---
@@ -190,8 +189,7 @@ fn process_node<'scope>(
     } else {
         0
     };
-    let total_size = compressed_payload.len() + footer_size + 1; // +1 for MetaByte
-
+    let total_size = compressed_payload.len() + footer_size + 1;
     let mut final_buffer = Vec::with_capacity(total_size);
     final_buffer.extend_from_slice(&compressed_payload);
 
@@ -202,7 +200,6 @@ fn process_node<'scope>(
         let count = children_refs.len() as u32;
         final_buffer.extend_from_slice(&count.to_le_bytes());
     }
-
     let meta = MetaByte::new(is_chunkable, compressor.id());
     final_buffer.push(meta.as_u8());
 
@@ -210,7 +207,6 @@ fn process_node<'scope>(
     // This is the only serialization point (Mutex).
 
     let write_result = ctx.writer.write_all(&final_buffer);
-
     let offset = match write_result {
         Ok(off) => off,
         Err(e) => {

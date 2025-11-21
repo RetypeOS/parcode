@@ -365,7 +365,7 @@ impl<'a> ChunkNode<'a> {
                 unsafe {
                     // Reconstruct pointer. `ptr::add` works on T units.
                     let dest_ptr = (buffer_base as *mut T).add(start_idx);
-                    let src_ptr = src_items.as_ptr(); 
+                    let src_ptr = src_items.as_ptr();
 
                     // Efficient memory copy
                     std::ptr::copy_nonoverlapping(src_ptr, dest_ptr, count);

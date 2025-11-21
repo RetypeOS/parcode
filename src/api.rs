@@ -48,24 +48,23 @@ impl Parcode {
     {
         Self::default().write(path, root_object)
     }
-    /// PLACEHOLDER
-    pub fn write<T, P>(&self, path: P, root_object: &T) -> Result<()>
+
+    /// Serializes the object graph to disk using Zero-Copy where possible.
+    /// The `root_object` must outlive the function call (implied).
+    pub fn write<'a, T, P>(&self, path: P, root_object: &'a T) -> Result<()>
     where
         T: ParcodeVisitor + Sync,
         P: AsRef<Path>,
     {
         let path = path.as_ref();
-        let mut graph = TaskGraph::new();
-        
-        // Visit inicial con Config Default (None)
+        // The graph is tied to lifetime 'a of root_object
+        let mut graph = TaskGraph::<'a>::new();
+
         root_object.visit(&mut graph, None, None);
 
         let writer = SeqWriter::create(path)?;
-        
-        // Instanciamos el Registro con los defaults del sistema
         let registry = crate::compression::CompressorRegistry::new();
 
-        // Ejecutamos
         let root_child_ref = execute_graph(&graph, &writer, &registry)?;
 
         let header = GlobalHeader::new(root_child_ref.offset, root_child_ref.length);

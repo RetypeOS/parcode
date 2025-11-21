@@ -1,15 +1,14 @@
 use crate::error::Result;
 use crate::format::ChildRef;
-use std::any::Any;
 
-/// Configuración de ejecución para un nodo específico.
-/// Se mantiene pequeño (1 byte) para paso eficiente por copia.
+/// Execution configuration for a specific node.
+/// Kept small (1 byte) for efficient pass-by-copy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JobConfig {
-    /// ID del algoritmo de compresión.
-    /// 0 = Sin Compresión (Default)
-    /// 1 = Lz4 (si feature activa)
-    /// 2..255 = Reservado
+    /// Compression algorithm ID.
+    /// 0 = No Compression (Default)
+    /// 1 = Lz4 (if feature enabled)
+    /// 2..255 = Reserved
     pub compression_id: u8,
 }
 
@@ -20,23 +19,30 @@ impl Default for JobConfig {
 }
 
 /// Represents a unit of work: a piece of data that knows how to serialize itself.
-pub trait SerializationJob: Send + Sync {
-    /// PLACEHOLDER
+///
+/// # Lifetimes
+/// * `'a`: The lifetime of the data being serialized. This allows the Job to hold
+///   references (e.g., `&'a [u8]`) instead of owning the data, enabling Zero-Copy writes.
+pub trait SerializationJob<'a>: Send + Sync {
+    /// Executes the serialization logic, producing a raw byte buffer.
     fn execute(&self, children_refs: &[ChildRef]) -> Result<Vec<u8>>;
-    /// PLACEHOLDER
-    fn estimated_size(&self) -> usize;
-    /// PLACEHOLDER
-    fn as_any(&self) -> &dyn Any;
 
-    /// Devuelve la configuración específica para este trabajo.
-    /// Por defecto retorna configuración estándar (ID 0, sin flags).
+    /// Returns an estimated size in bytes for scheduling heuristics.
+    fn estimated_size(&self) -> usize;
+
+    /// Returns the specific configuration for this job.
     fn config(&self) -> JobConfig {
         JobConfig::default()
     }
 }
 
-impl std::fmt::Debug for Box<dyn SerializationJob> {
+impl<'a> std::fmt::Debug for Box<dyn SerializationJob<'a> + 'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "SerializationJob(size={}, algo={})", self.estimated_size(), self.config().compression_id)
+        write!(
+            f,
+            "SerializationJob(size={}, algo={})",
+            self.estimated_size(),
+            self.config().compression_id
+        )
     }
 }

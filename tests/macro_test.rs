@@ -1,14 +1,14 @@
 #![allow(missing_docs)]
 
 use parcode::{Parcode, ParcodeObject};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 
 // Definición Ergonómica V3
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ParcodeObject)]
 struct LevelState {
-    id: u32,          // Local (Bincode directo)
-    name: String,     // Local
+    id: u32,      // Local (Bincode directo)
+    name: String, // Local
 
     #[parcode(chunkable)] // Automatic settings
     indices: Vec<u64>,
@@ -28,7 +28,7 @@ fn test_macro_ergonomics() {
     };
 
     let file = NamedTempFile::new().unwrap();
-    
+
     // 1. Guardar (La macro se encarga de todo el grafo)
     Parcode::save(file.path(), &level).unwrap();
 

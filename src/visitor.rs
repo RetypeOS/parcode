@@ -3,7 +3,7 @@
 //use crate::graph::core::TaskGraph;
 //use crate::graph::id::ChunkId;
 //use crate::graph::job::SerializationJob;
-use crate::graph::{TaskGraph, ChunkId, SerializationJob, JobConfig};
+use crate::graph::{ChunkId, JobConfig, SerializationJob, TaskGraph};
 
 /// A trait for types that can be structurally visited to build a Parcode TaskGraph.
 ///
@@ -11,14 +11,22 @@ use crate::graph::{TaskGraph, ChunkId, SerializationJob, JobConfig};
 /// this trait writes *Nodes* into the graph.
 pub trait ParcodeVisitor {
     /// Visits the object and populates the graph.
-    /// 
-    /// # Arguments
-    /// * `config_override`: If `Some`, implies that the parent requested a specific configuration 
-    ///   (e.g., compression) for this node. Implementations MUST apply this to the created job.
-    fn visit(&self, graph: &mut TaskGraph, parent_id: Option<ChunkId>, config_override: Option<JobConfig>);
-    
+    ///
+    /// # Lifetimes
+    /// * `'a`: The lifetime of the graph. `Self` must outlive `'a` if we want to
+    ///   store references to `self` inside the graph (Zero-Copy).
+    fn visit<'a>(
+        &'a self,
+        graph: &mut TaskGraph<'a>,
+        parent_id: Option<ChunkId>,
+        config_override: Option<JobConfig>,
+    );
+
     /// Helper method to create the specific Job for this type.
-    fn create_job(&self, config_override: Option<JobConfig>) -> Box<dyn SerializationJob>;
+    fn create_job<'a>(
+        &'a self,
+        config_override: Option<JobConfig>,
+    ) -> Box<dyn SerializationJob<'a> + 'a>;
 }
 
 // Example implementation for primitives (leaves in the graph logic,

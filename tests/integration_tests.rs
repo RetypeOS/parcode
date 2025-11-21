@@ -2,13 +2,13 @@
 //! Suite de pruebas de integración para Parcode.
 
 use parcode::{
-    Parcode, ParcodeReader, ParcodeError, Result,
-    visitor::ParcodeVisitor,
-    graph::{TaskGraph, ChunkId, SerializationJob, JobConfig},
+    Parcode, ParcodeError, ParcodeReader, Result,
     format::ChildRef,
-    reader::{ParcodeNative, ChunkNode},
+    graph::{ChunkId, JobConfig, SerializationJob, TaskGraph},
+    reader::{ChunkNode, ParcodeNative},
+    visitor::ParcodeVisitor,
 };
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use tempfile::NamedTempFile;
@@ -24,7 +24,12 @@ struct TestUser {
 
 // Implementación manual de ParcodeVisitor (lo que haría la macro)
 impl ParcodeVisitor for TestUser {
-    fn visit(&self, graph: &mut TaskGraph, parent_id: Option<ChunkId>, config_override: Option<JobConfig>) {
+    fn visit<'a>(
+        &'a self,
+        graph: &mut TaskGraph<'a>,
+        parent_id: Option<ChunkId>,
+        config_override: Option<JobConfig>,
+    ) {
         // 1. Crear trabajo
         let job = self.create_job(config_override);
         let my_id = graph.add_node(job);
@@ -33,7 +38,10 @@ impl ParcodeVisitor for TestUser {
             graph.link_parent_child(pid, my_id);
         }
     }
-    fn create_job(&self, config_override: Option<JobConfig>) -> Box<dyn SerializationJob> {
+    fn create_job<'a>(
+        &'a self,
+        config_override: Option<JobConfig>,
+    ) -> Box<dyn SerializationJob<'a> + 'a> {
         let base = Box::new(self.clone());
         if let Some(cfg) = config_override {
             Box::new(parcode::rt::ConfiguredJob::new(base, cfg))
@@ -44,13 +52,14 @@ impl ParcodeVisitor for TestUser {
 }
 
 // Implementación manual de SerializationJob
-impl SerializationJob for TestUser {
+impl SerializationJob<'_> for TestUser {
     fn execute(&self, _children: &[ChildRef]) -> Result<Vec<u8>> {
         bincode::serde::encode_to_vec(self, bincode::config::standard())
             .map_err(|e| ParcodeError::Serialization(e.to_string()))
     }
-    fn estimated_size(&self) -> usize { 100 }
-    fn as_any(&self) -> &dyn std::any::Any { self }
+    fn estimated_size(&self) -> usize {
+        100
+    }
 }
 
 impl ParcodeNative for TestUser {
@@ -68,40 +77,53 @@ struct UserDirectory {
 }
 
 impl ParcodeVisitor for UserDirectory {
-    fn visit(&self, graph: &mut TaskGraph, parent_id: Option<ChunkId>, config_override: Option<JobConfig>) {
+    fn visit<'a>(
+        &'a self,
+        graph: &mut TaskGraph<'a>,
+        parent_id: Option<ChunkId>,
+        config_override: Option<JobConfig>,
+    ) {
         // 1. Nodo contenedor para 'region'
-        #[derive(Serialize)] struct Header { region: String }
-        let header = Header { region: self.region.clone() };
-        
+        #[derive(Serialize)]
+        struct Header {
+            region: String,
+        }
+        let header = Header {
+            region: self.region.clone(),
+        };
+
         struct HeaderJob(Header);
-        impl SerializationJob for HeaderJob {
+        impl SerializationJob<'_> for HeaderJob {
             fn execute(&self, _: &[ChildRef]) -> Result<Vec<u8>> {
                 bincode::serde::encode_to_vec(&self.0, bincode::config::standard())
                     .map_err(|e| ParcodeError::Serialization(e.to_string()))
             }
-            fn estimated_size(&self) -> usize { 50 }
-            fn as_any(&self) -> &dyn std::any::Any { self }
+            fn estimated_size(&self) -> usize {
+                50
+            }
         }
 
         let header_job_base = Box::new(HeaderJob(header));
         // Aplicamos config si existe
-        let header_job: Box<dyn SerializationJob> = if let Some(cfg) = config_override {
+        let header_job: Box<dyn SerializationJob<'_>> = if let Some(cfg) = config_override {
             Box::new(parcode::rt::ConfiguredJob::new(header_job_base, cfg))
         } else {
             header_job_base
         };
 
         let my_id = graph.add_node(header_job);
-        if let Some(pid) = parent_id { graph.link_parent_child(pid, my_id); }
+        if let Some(pid) = parent_id {
+            graph.link_parent_child(pid, my_id);
+        }
 
         // 2. DELEGAR AL VEC
         // Aquí propagamos None, pero podríamos propagar config_override si quisiéramos que la config
         // del padre afectara a los hijos users.
         self.users.visit(graph, Some(my_id), None);
     }
-    
-    fn create_job(&self, _config_override: Option<JobConfig>) -> Box<dyn SerializationJob> { 
-        panic!("Not used in root read for UserDirectory mock") 
+
+    fn create_job(&self, _config_override: Option<JobConfig>) -> Box<dyn SerializationJob<'_>> {
+        panic!("Not used in root read for UserDirectory mock")
     }
 }
 
@@ -126,14 +148,24 @@ struct GameZone {
 // --- IMPLEMENTACIONES JUEGO ---
 
 impl ParcodeVisitor for GameLevel {
-    fn visit(&self, graph: &mut TaskGraph, parent_id: Option<ChunkId>, config_override: Option<JobConfig>) {
+    fn visit<'a>(
+        &'a self,
+        graph: &mut TaskGraph<'a>,
+        parent_id: Option<ChunkId>,
+        config_override: Option<JobConfig>,
+    ) {
         let job = self.create_job(config_override);
         let my_id = graph.add_node(job);
-        if let Some(pid) = parent_id { graph.link_parent_child(pid, my_id); }
-        
+        if let Some(pid) = parent_id {
+            graph.link_parent_child(pid, my_id);
+        }
+
         self.zones.visit(graph, Some(my_id), None);
     }
-    fn create_job(&self, config_override: Option<JobConfig>) -> Box<dyn SerializationJob> { 
+    fn create_job<'a>(
+        &'a self,
+        config_override: Option<JobConfig>,
+    ) -> Box<dyn SerializationJob<'a> + 'a> {
         let base = Box::new(self.clone());
         if let Some(cfg) = config_override {
             Box::new(parcode::rt::ConfiguredJob::new(base, cfg))
@@ -143,27 +175,38 @@ impl ParcodeVisitor for GameLevel {
     }
 }
 
-impl SerializationJob for GameLevel {
+impl SerializationJob<'_> for GameLevel {
     fn execute(&self, _children: &[ChildRef]) -> Result<Vec<u8>> {
         let local_data = (&self.id, &self.name);
         bincode::serde::encode_to_vec(&local_data, bincode::config::standard())
             .map_err(|e| ParcodeError::Serialization(e.to_string()))
     }
-    fn estimated_size(&self) -> usize { 100 }
-    fn as_any(&self) -> &dyn std::any::Any { self }
+    fn estimated_size(&self) -> usize {
+        100
+    }
 }
 
 impl ParcodeVisitor for ZoneList {
-    fn visit(&self, graph: &mut TaskGraph, parent_id: Option<ChunkId>, config_override: Option<JobConfig>) {
+    fn visit<'a>(
+        &'a self,
+        graph: &mut TaskGraph<'a>,
+        parent_id: Option<ChunkId>,
+        config_override: Option<JobConfig>,
+    ) {
         let job = self.create_job(config_override);
         let my_id = graph.add_node(job);
-        if let Some(pid) = parent_id { graph.link_parent_child(pid, my_id); }
-        
+        if let Some(pid) = parent_id {
+            graph.link_parent_child(pid, my_id);
+        }
+
         for zone in &self.0 {
             zone.visit(graph, Some(my_id), None);
         }
     }
-    fn create_job(&self, config_override: Option<JobConfig>) -> Box<dyn SerializationJob> { 
+    fn create_job<'a>(
+        &'a self,
+        config_override: Option<JobConfig>,
+    ) -> Box<dyn SerializationJob<'a> + 'a> {
         let base = Box::new(self.clone());
         if let Some(cfg) = config_override {
             Box::new(parcode::rt::ConfiguredJob::new(base, cfg))
@@ -173,19 +216,32 @@ impl ParcodeVisitor for ZoneList {
     }
 }
 
-impl SerializationJob for ZoneList {
-    fn execute(&self, _children: &[ChildRef]) -> Result<Vec<u8>> { Ok(Vec::new()) }
-    fn estimated_size(&self) -> usize { 0 }
-    fn as_any(&self) -> &dyn std::any::Any { self }
+impl SerializationJob<'_> for ZoneList {
+    fn execute(&self, _children: &[ChildRef]) -> Result<Vec<u8>> {
+        Ok(Vec::new())
+    }
+    fn estimated_size(&self) -> usize {
+        0
+    }
 }
 
 impl ParcodeVisitor for GameZone {
-    fn visit(&self, graph: &mut TaskGraph, parent_id: Option<ChunkId>, config_override: Option<JobConfig>) {
+    fn visit<'a>(
+        &'a self,
+        graph: &mut TaskGraph<'a>,
+        parent_id: Option<ChunkId>,
+        config_override: Option<JobConfig>,
+    ) {
         let job = self.create_job(config_override);
         let my_id = graph.add_node(job);
-        if let Some(pid) = parent_id { graph.link_parent_child(pid, my_id); }
+        if let Some(pid) = parent_id {
+            graph.link_parent_child(pid, my_id);
+        }
     }
-    fn create_job(&self, config_override: Option<JobConfig>) -> Box<dyn SerializationJob> { 
+    fn create_job<'a>(
+        &'a self,
+        config_override: Option<JobConfig>,
+    ) -> Box<dyn SerializationJob<'a> + 'a> {
         let base = Box::new(self.clone());
         if let Some(cfg) = config_override {
             Box::new(parcode::rt::ConfiguredJob::new(base, cfg))
@@ -195,23 +251,28 @@ impl ParcodeVisitor for GameZone {
     }
 }
 
-impl SerializationJob for GameZone {
+impl SerializationJob<'_> for GameZone {
     fn execute(&self, _children: &[ChildRef]) -> Result<Vec<u8>> {
         bincode::serde::encode_to_vec(self, bincode::config::standard())
             .map_err(|e| ParcodeError::Serialization(e.to_string()))
     }
-    fn estimated_size(&self) -> usize { self.data.len() }
-    fn as_any(&self) -> &dyn std::any::Any { self }
+    fn estimated_size(&self) -> usize {
+        self.data.len()
+    }
 }
 
 // --- TESTS ---
 
 #[test]
 fn test_primitive_lifecycle() -> Result<()> {
-    let user = TestUser { id: 101, username: "satoshi".into(), active: true };
-    
+    let user = TestUser {
+        id: 101,
+        username: "satoshi".into(),
+        active: true,
+    };
+
     let file = NamedTempFile::new().unwrap();
-    
+
     // WRITE
     Parcode::save(file.path(), &user)?;
 
@@ -236,12 +297,15 @@ fn test_massive_vector_sharding() -> Result<()> {
 
     assert_eq!(data.len(), loaded_data.len());
     assert_eq!(data, loaded_data);
-    
+
     let reader = ParcodeReader::open(file.path())?;
     let root = reader.root()?;
     let shards = root.children()?;
     println!("Shards created: {}", shards.len());
-    assert!(shards.len() > 1, "El sistema debería haber fragmentado el vector");
+    assert!(
+        shards.len() > 1,
+        "El sistema debería haber fragmentado el vector"
+    );
 
     Ok(())
 }
@@ -251,10 +315,22 @@ fn test_nested_structures() -> Result<()> {
     let dir = UserDirectory {
         region: "EU-West".to_string(),
         users: vec![
-            TestUser { id: 1, username: "a".into(), active: true },
-            TestUser { id: 2, username: "b".into(), active: false },
-            TestUser { id: 3, username: "c".into(), active: true },
-        ]
+            TestUser {
+                id: 1,
+                username: "a".into(),
+                active: true,
+            },
+            TestUser {
+                id: 2,
+                username: "b".into(),
+                active: false,
+            },
+            TestUser {
+                id: 3,
+                username: "c".into(),
+                active: true,
+            },
+        ],
     };
 
     let file = NamedTempFile::new().unwrap();
@@ -262,17 +338,20 @@ fn test_nested_structures() -> Result<()> {
 
     let reader = ParcodeReader::open(file.path())?;
     let root = reader.root()?;
-    
-    #[derive(Deserialize)] struct Header { region: String }
+
+    #[derive(Deserialize)]
+    struct Header {
+        region: String,
+    }
     let header: Header = root.decode()?;
     assert_eq!(header.region, "EU-West");
 
     let children = root.children()?;
     assert_eq!(children.len(), 1);
-    
+
     let vec_container = &children[0];
     let loaded_users: Vec<TestUser> = vec_container.decode_parallel_collection()?;
-    
+
     assert_eq!(dir.users, loaded_users);
 
     Ok(())
@@ -282,7 +361,7 @@ fn test_nested_structures() -> Result<()> {
 fn test_random_access_logic() -> Result<()> {
     let count = 50_000;
     let data: Vec<u64> = (0..count).map(|i| i as u64 * 10).collect();
-    
+
     let file = NamedTempFile::new().unwrap();
     Parcode::save(file.path(), &data)?;
 
@@ -316,7 +395,7 @@ fn test_corruption_and_errors() -> Result<()> {
 
     {
         let mut f = File::create(&path).unwrap();
-        let junk = vec![0u8; 100]; 
+        let junk = vec![0u8; 100];
         f.write_all(&junk).unwrap();
     }
     let res = ParcodeReader::open(&path);
@@ -326,9 +405,13 @@ fn test_corruption_and_errors() -> Result<()> {
         panic!("No detectó magic bytes inválidos");
     }
 
-    let user = TestUser { id: 1, username: "test".into(), active: true };
+    let user = TestUser {
+        id: 1,
+        username: "test".into(),
+        active: true,
+    };
     Parcode::save(&path, &user)?;
-    
+
     let len = std::fs::metadata(&path).unwrap().len();
     let f = OpenOptions::new().write(true).open(&path).unwrap();
     f.set_len(len / 2).unwrap();

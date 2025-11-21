@@ -9,5 +9,5 @@ pub mod job;
 
 pub use core::{Node, TaskGraph};
 pub use id::ChunkId;
-pub use job::SerializationJob;
 pub use job::JobConfig;
+pub use job::SerializationJob;

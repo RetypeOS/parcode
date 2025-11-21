@@ -44,55 +44,42 @@ struct VecContainerJob {
     total_items: u64,
 }
 
-impl SerializationJob for VecContainerJob {
+// ContainerJob owns its metadata, so it works for any lifetime 'a
+impl<'a> SerializationJob<'a> for VecContainerJob {
     fn execute(&self, _children_refs: &[ChildRef]) -> Result<Vec<u8>> {
         let mut buffer = Vec::new();
-        // Escribir total_items (8 bytes)
         buffer.extend_from_slice(&self.total_items.to_le_bytes());
-        
-        // Escribir tabla RLE usando bincode
         let runs_bytes =
             bincode::serde::encode_to_vec(&self.shard_runs, bincode::config::standard())
                 .map_err(|e| ParcodeError::Serialization(e.to_string()))?;
         buffer.extend_from_slice(&runs_bytes);
-        
         Ok(buffer)
     }
 
     fn estimated_size(&self) -> usize {
-        // Heurística simple: 8 bytes header + 8 bytes por run
         8 + (self.shard_runs.len() * 8)
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }
 
 /// El trabajo que serializa un fragmento (Shard) de datos real.
 /// Contiene un subconjunto del vector original (`data`).
 #[derive(Clone)]
-struct VecShardJob<T> {
-    data: Vec<T>,
+struct VecShardJob<'a, T> {
+    data: &'a [T],
 }
 
-impl<T> SerializationJob for VecShardJob<T>
+impl<'a, T> SerializationJob<'a> for VecShardJob<'a, T>
 where
     T: Serialize + Send + Sync + 'static,
 {
     fn execute(&self, _children_refs: &[ChildRef]) -> Result<Vec<u8>> {
-        // Serialización "Quirúrgica": Convertimos el slice de datos a bytes usando Bincode.
-        // Esto ocurre en paralelo en un hilo de trabajo.
-        bincode::serde::encode_to_vec(&self.data, bincode::config::standard())
+        // Serialize the SLICE directly. No cloning occurred during graph build.
+        bincode::serde::encode_to_vec(self.data, bincode::config::standard())
             .map_err(|e| ParcodeError::Serialization(e.to_string()))
     }
 
     fn estimated_size(&self) -> usize {
         self.data.len() * std::mem::size_of::<T>()
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }
 
@@ -102,7 +89,12 @@ impl<T> ParcodeVisitor for Vec<T>
 where
     T: ParcodeVisitor + Clone + Send + Sync + 'static + Serialize,
 {
-    fn visit(&self, graph: &mut TaskGraph, parent_id: Option<ChunkId>, config_override: Option<JobConfig>) {
+    fn visit<'a>(
+        &'a self,
+        graph: &mut TaskGraph<'a>,
+        parent_id: Option<ChunkId>,
+        config_override: Option<JobConfig>,
+    ) {
         let total_len = self.len();
         let items_per_shard;
 
@@ -129,7 +121,7 @@ where
             };
 
             // 2. Calcular Estrategias
-            
+
             // Estrategia A: Optimizado para I/O (Llenar chunks de 128KB)
             let count_by_io = (TARGET_SHARD_SIZE_BYTES / avg_item_size).max(1) as usize;
 
@@ -168,7 +160,6 @@ where
                 item_count: chunks[0].len() as u32,
                 repeat: 0,
             };
-
             for chunk in &chunks {
                 let len = chunk.len() as u32;
                 if len == current_run.item_count {
@@ -192,14 +183,13 @@ where
 
         // Aplicar configuración (override) al contenedor si existe.
         // Si el usuario pide LZ4, el contenedor también se marca como LZ4 (aunque es pequeño).
-        let container_job: Box<dyn SerializationJob> = if let Some(cfg) = config_override {
+        let container_job: Box<dyn SerializationJob<'a> + 'a> = if let Some(cfg) = config_override {
             Box::new(crate::rt::ConfiguredJob::new(container_inner, cfg))
         } else {
             container_inner
         };
 
         let my_id = graph.add_node(container_job);
-
         if let Some(pid) = parent_id {
             graph.link_parent_child(pid, my_id);
         }
@@ -210,13 +200,13 @@ where
 
         // 2. Crear Nodos Shard (Hijos)
         for chunk_slice in chunks {
-            let shard_data = chunk_slice.to_vec();
-            let shard_inner = Box::new(VecShardJob { data: shard_data });
+            // ZERO-COPY: We wrap the slice reference directly.
+            let shard_inner = Box::new(VecShardJob { data: chunk_slice });
 
             // PROPAGACIÓN DE CONFIGURACIÓN:
             // Es crítico aplicar la configuración del vector (ej. Compresión LZ4) a los Shards,
             // ya que es aquí donde residen el 99% de los bytes.
-            let shard_job: Box<dyn SerializationJob> = if let Some(cfg) = config_override {
+            let shard_job: Box<dyn SerializationJob<'a> + 'a> = if let Some(cfg) = config_override {
                 Box::new(crate::rt::ConfiguredJob::new(shard_inner, cfg))
             } else {
                 shard_inner
@@ -231,18 +221,20 @@ where
             // No son nodos independientes del grafo (a menos que T cree explícitamente sub-nodos).
             // Si T es un struct complejo, su propia configuración (vía Macro) dictará cómo se comporta.
             for item in chunk_slice {
+                // Recursion propagates the graph reference
                 item.visit(graph, Some(shard_id), None);
             }
         }
     }
 
-    fn create_job(&self, config_override: Option<JobConfig>) -> Box<dyn SerializationJob> {
-        // Este método se usa si el Vec es la raíz absoluta o para instanciación genérica.
+    fn create_job<'a>(
+        &'a self,
+        config_override: Option<JobConfig>,
+    ) -> Box<dyn SerializationJob<'a> + 'a> {
         let inner = Box::new(VecContainerJob {
             shard_runs: Vec::new(),
             total_items: 0,
         });
-        
         if let Some(cfg) = config_override {
             Box::new(crate::rt::ConfiguredJob::new(inner, cfg))
         } else {
@@ -256,7 +248,8 @@ where
 #[derive(Clone)]
 struct PrimitiveJob<T>(T);
 
-impl<T> SerializationJob for PrimitiveJob<T>
+// Primitives own their data (copy), so they are valid for any lifetime 'a
+impl<'a, T> SerializationJob<'a> for PrimitiveJob<T>
 where
     T: Serialize + Send + Sync + Clone + 'static,
 {
@@ -264,22 +257,25 @@ where
         bincode::serde::encode_to_vec(&self.0, bincode::config::standard())
             .map_err(|e| ParcodeError::Serialization(e.to_string()))
     }
-
     fn estimated_size(&self) -> usize {
         std::mem::size_of::<T>()
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }
 
 impl<T: ParcodeVisitor> ParcodeVisitor for &T {
-    fn visit(&self, graph: &mut TaskGraph, parent_id: Option<ChunkId>, config_override: Option<JobConfig>) {
+    fn visit<'a>(
+        &'a self,
+        graph: &mut TaskGraph<'a>,
+        parent_id: Option<ChunkId>,
+        config_override: Option<JobConfig>,
+    ) {
         (**self).visit(graph, parent_id, config_override)
     }
 
-    fn create_job(&self, config_override: Option<JobConfig>) -> Box<dyn SerializationJob> {
+    fn create_job<'a>(
+        &'a self,
+        config_override: Option<JobConfig>,
+    ) -> Box<dyn SerializationJob<'a> + 'a> {
         (**self).create_job(config_override)
     }
 }
@@ -289,21 +285,15 @@ macro_rules! impl_primitive_visitor {
     ($($t:ty),*) => {
         $(
             impl ParcodeVisitor for $t {
-                fn visit(&self, graph: &mut TaskGraph, parent_id: Option<ChunkId>, config_override: Option<JobConfig>) {
-                    // OPTIMIZACIÓN CRÍTICA:
-                    // Si tenemos un padre (ej: estamos dentro de un Vec<u64>), NO creamos un nodo.
-                    // Somos datos "inlined" dentro del payload del padre.
-                    // Solo creamos nodo si somos la RAÍZ absoluta (parent_id es None).
+                fn visit<'a>(&'a self, graph: &mut TaskGraph<'a>, parent_id: Option<ChunkId>, config_override: Option<JobConfig>) {
                     if parent_id.is_none() {
                         let job = self.create_job(config_override);
                         graph.add_node(job);
                     }
                 }
 
-                fn create_job(&self, config_override: Option<JobConfig>) -> Box<dyn SerializationJob> {
+                fn create_job<'a>(&'a self, config_override: Option<JobConfig>) -> Box<dyn SerializationJob<'a> + 'a> {
                     let base_job = Box::new(PrimitiveJob(self.clone()));
-                    
-                    // Aplicamos la configuración (wrapper) si se solicita.
                     if let Some(cfg) = config_override {
                         Box::new(crate::rt::ConfiguredJob::new(base_job, cfg))
                     } else {
@@ -315,7 +305,6 @@ macro_rules! impl_primitive_visitor {
     }
 }
 
-// Aplicar a todos los tipos estándar soportados por Bincode/Serde.
 impl_primitive_visitor!(
     u8, u16, u32, u64, u128, i8, i16, i32, i64, i128, f32, f64, bool, String
 );
