@@ -19,7 +19,11 @@ use std::sync::Mutex;
 /// before triggering a syscall.
 const WRITE_BUFFER_SIZE: usize = 16 * 1024 * 1024;
 
-/// PLACEHOLDER
+/// A thread-safe, buffered sequential writer.
+///
+/// This writer is designed to be shared across multiple threads (via `Mutex`)
+/// to allow concurrent graph execution to serialize data, while ensuring
+/// that the actual disk writes happen sequentially and efficiently.
 #[derive(Debug)]
 pub struct SeqWriter {
     inner: Mutex<WriterState>,
@@ -33,6 +37,8 @@ struct WriterState {
 
 impl SeqWriter {
     /// Opens the file with an optimized buffer configuration.
+    ///
+    /// The file is created (truncated if it exists) and wrapped in a large `BufWriter`.
     pub fn create(path: &Path) -> Result<Self> {
         let file = File::create(path)?;
         Ok(Self {

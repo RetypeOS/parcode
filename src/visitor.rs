@@ -1,4 +1,7 @@
-//! PLACEHOLDER
+//! Defines the `ParcodeVisitor` trait for graph construction.
+//!
+//! This module allows types to define how they should be split into nodes
+//! in the `TaskGraph`.
 
 //use crate::graph::core::TaskGraph;
 //use crate::graph::id::ChunkId;

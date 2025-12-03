@@ -1,13 +1,13 @@
-//! Implementación de `ParcodeVisitor` para colecciones estándar de Rust.
+//! Implementation of `ParcodeVisitor` for standard Rust collections.
 //!
-//! # Estrategia de Sharding V3: Adaptativa y Consciente de la Concurrencia
+//! # Sharding Strategy V3: Adaptive and Concurrency-Aware
 //!
-//! Este módulo decide cómo dividir un `Vec<T>` en fragmentos (shards). La decisión se basa en:
-//! 1. **Tamaño en Bytes:** Buscamos ~128KB por chunk para optimizar el throughput de SSD y la compresión.
-//! 2. **Saturación de CPU:** Aseguramos crear suficientes chunks para alimentar todos los núcleos disponibles,
-//!    incluso si eso implica crear chunks más pequeños (hasta un suelo de 4KB).
-//! 3. **Muestreo de Datos Reales:** Medimos el tamaño de serialización real de una muestra para manejar
-//!    datos alojados en el Heap (como `Vec<String>`) con precisión.
+//! This module decides how to split a `Vec<T>` into shards. The decision is based on:
+//! 1.  **Size in Bytes:** We aim for ~128KB per chunk to optimize SSD throughput and compression.
+//! 2.  **CPU Saturation:** We ensure enough chunks are created to feed all available cores,
+//!     even if it means creating smaller chunks (down to a floor of 4KB).
+//! 3.  **Real Data Sampling:** We measure the actual serialization size of a sample to handle
+//!     heap-allocated data (like `Vec<String>`) accurately.
 
 use crate::error::{ParcodeError, Result};
 use crate::format::ChildRef;
@@ -15,29 +15,29 @@ use crate::graph::{ChunkId, JobConfig, SerializationJob, TaskGraph};
 use crate::visitor::ParcodeVisitor;
 use serde::{Deserialize, Serialize};
 
-// --- CONSTANTES DE AJUSTE (TUNING) ---
+// --- TUNING CONSTANTS ---
 
-/// Tamaño ideal para un chunk en disco. Optimizado para throughput de SSD.
+/// Ideal size for a chunk on disk. Optimized for SSD throughput.
 const TARGET_SHARD_SIZE_BYTES: u64 = 128 * 1024; // 128 KB
 
-/// Tamaño mínimo absoluto para evitar el overhead excesivo del sistema operativo/grafo.
+/// Absolute minimum size to avoid excessive OS/graph overhead.
 const MIN_SHARD_SIZE_BYTES: u64 = 4 * 1024; // 4 KB
 
-/// Multiplicador de núcleos de CPU. Si tenemos 8 núcleos, queremos al menos 32 tareas
-/// para permitir un "work-stealing" y balanceo de carga efectivo en Rayon.
+/// CPU core multiplier. If we have 8 cores, we want at least 32 tasks
+/// to allow effective "work-stealing" and load balancing in Rayon.
 const TASKS_PER_CORE: usize = 4;
 
-// --- Estructuras de Metadatos Internas ---
+// --- Internal Metadata Structures ---
 
-/// Estructura RLE (Run-Length Encoding) para mapear índices lógicos a shards físicos.
+/// RLE (Run-Length Encoding) structure to map logical indices to physical shards.
 #[derive(Clone, Serialize, Deserialize, Debug)]
 struct ShardRun {
     item_count: u32,
     repeat: u32,
 }
 
-/// El trabajo que serializa el Nodo Contenedor del Vector.
-/// Contiene solo metadatos (tabla RLE y longitud total), no los datos en sí.
+/// The job that serializes the Vector Container Node.
+/// Contains only metadata (RLE table and total length), not the data itself.
 #[derive(Clone)]
 struct VecContainerJob {
     shard_runs: Vec<ShardRun>,
@@ -61,8 +61,8 @@ impl<'a> SerializationJob<'a> for VecContainerJob {
     }
 }
 
-/// El trabajo que serializa un fragmento (Shard) de datos real.
-/// Contiene un subconjunto del vector original (`data`).
+/// The job that serializes a real data Shard.
+/// Contains a subset of the original vector (`data`).
 #[derive(Clone)]
 struct VecShardJob<'a, T> {
     data: &'a [T],
@@ -83,7 +83,7 @@ where
     }
 }
 
-// --- Implementación del Visitante ---
+// --- Visitor Implementation ---
 
 impl<T> ParcodeVisitor for Vec<T>
 where
@@ -98,12 +98,12 @@ where
         let total_len = self.len();
         let items_per_shard;
 
-        // --- FASE 1: CÁLCULO DE ESTRATEGIA DE SHARDING ---
+        // --- PHASE 1: SHARDING STRATEGY CALCULATION ---
         if total_len == 0 {
             items_per_shard = 1;
         } else {
-            // 1. Medir coste de los datos (Sampling)
-            // Tomamos hasta 8 elementos para estimar el tamaño real (útil para Strings/Heap).
+            // 1. Measure data cost (Sampling)
+            // We take up to 8 elements to estimate the real size (useful for Strings/Heap).
             let sample_count = total_len.min(8);
             let sample_slice = &self[0..sample_count];
 
@@ -113,47 +113,47 @@ where
                     Err(_) => 0,
                 };
 
-            // Calcular bytes promedio por item (mínimo 1 byte para evitar div por cero)
+            // Calculate average bytes per item (minimum 1 byte to avoid div by zero)
             let avg_item_size = if sample_size_bytes > 0 {
                 (sample_size_bytes / sample_count as u64).max(1)
             } else {
                 (std::mem::size_of::<T>() as u64).max(1)
             };
 
-            // 2. Calcular Estrategias
+            // 2. Calculate Strategies
 
-            // Estrategia A: Optimizado para I/O (Llenar chunks de 128KB)
+            // Strategy A: Optimized for I/O (Fill 128KB chunks)
             let count_by_io = (TARGET_SHARD_SIZE_BYTES / avg_item_size).max(1) as usize;
 
-            // Estrategia B: Optimizado para CPU (Llenar núcleos)
-            // Queremos suficientes tareas para mantener a Rayon ocupado.
+            // Strategy B: Optimized for CPU (Fill cores)
+            // We want enough tasks to keep Rayon busy.
             let num_cpus = std::thread::available_parallelism()
                 .map(|n| n.get())
                 .unwrap_or(1);
             let target_parallel_chunks = num_cpus * TASKS_PER_CORE;
             let count_by_cpu = (total_len / target_parallel_chunks).max(1);
 
-            // 3. Fusión de Estrategias
-            // Preferimos más chunks (CPU) a menos que sean ridículamente pequeños.
+            // 3. Strategy Fusion
+            // We prefer more chunks (CPU) unless they are ridiculously small.
             let candidate_count = count_by_io.min(count_by_cpu);
 
-            // Verificar tamaño físico del candidato
+            // Verify physical size of the candidate
             let estimated_chunk_size = candidate_count as u64 * avg_item_size;
 
             if estimated_chunk_size < MIN_SHARD_SIZE_BYTES {
-                // Demasiado pequeño. Escalar para cumplir el mínimo de 4KB.
+                // Too small. Scale to meet the 4KB minimum.
                 items_per_shard = (MIN_SHARD_SIZE_BYTES / avg_item_size).max(1) as usize;
             } else {
                 items_per_shard = candidate_count;
             }
         }
 
-        // --- FASE 2: CONSTRUCCIÓN DEL GRAFO ---
+        // --- PHASE 2: GRAPH CONSTRUCTION ---
 
-        // Generar slices (vistas) de los datos sin copiar memoria todavía.
+        // Generate slices (views) of the data without copying memory yet.
         let chunks: Vec<&[T]> = self.chunks(items_per_shard).collect();
 
-        // Construir metadatos RLE
+        // Build RLE metadata
         let mut shard_runs: Vec<ShardRun> = Vec::new();
         if !chunks.is_empty() {
             let mut current_run = ShardRun {
@@ -175,14 +175,14 @@ where
             shard_runs.push(current_run);
         }
 
-        // 1. Crear y Registrar el Nodo Contenedor
+        // 1. Create and Register the Container Node
         let container_inner = Box::new(VecContainerJob {
             shard_runs,
             total_items: self.len() as u64,
         });
 
-        // Aplicar configuración (override) al contenedor si existe.
-        // Si el usuario pide LZ4, el contenedor también se marca como LZ4 (aunque es pequeño).
+        // Apply configuration (override) to the container if it exists.
+        // If the user requests LZ4, the container is also marked as LZ4 (even if small).
         let container_job: Box<dyn SerializationJob<'a> + 'a> = if let Some(cfg) = config_override {
             Box::new(crate::rt::ConfiguredJob::new(container_inner, cfg))
         } else {
@@ -198,14 +198,14 @@ where
             return;
         }
 
-        // 2. Crear Nodos Shard (Hijos)
+        // 2. Create Shard Nodes (Children)
         for chunk_slice in chunks {
             // ZERO-COPY: We wrap the slice reference directly.
             let shard_inner = Box::new(VecShardJob { data: chunk_slice });
 
-            // PROPAGACIÓN DE CONFIGURACIÓN:
-            // Es crítico aplicar la configuración del vector (ej. Compresión LZ4) a los Shards,
-            // ya que es aquí donde residen el 99% de los bytes.
+            // CONFIGURATION PROPAGATION:
+            // It is critical to apply the vector configuration (e.g., LZ4 Compression) to the Shards,
+            // as this is where 99% of the bytes reside.
             let shard_job: Box<dyn SerializationJob<'a> + 'a> = if let Some(cfg) = config_override {
                 Box::new(crate::rt::ConfiguredJob::new(shard_inner, cfg))
             } else {
@@ -215,11 +215,11 @@ where
             let shard_id = graph.add_node(shard_job);
             graph.link_parent_child(my_id, shard_id);
 
-            // Recursión a elementos individuales.
-            // Nota: Pasamos 'None' como config override.
-            // Razón: Los items T se serializan dentro del payload del Shard usando Bincode.
-            // No son nodos independientes del grafo (a menos que T cree explícitamente sub-nodos).
-            // Si T es un struct complejo, su propia configuración (vía Macro) dictará cómo se comporta.
+            // Recursion to individual items.
+            // Note: We pass 'None' as config override.
+            // Reason: Items T are serialized within the Shard payload using Bincode.
+            // They are not independent graph nodes (unless T explicitly creates sub-nodes).
+            // If T is a complex struct, its own configuration (via Macro) will dictate how it behaves.
             for item in chunk_slice {
                 // Recursion propagates the graph reference
                 item.visit(graph, Some(shard_id), None);
@@ -243,7 +243,7 @@ where
     }
 }
 
-// --- Implementación para Primitivos ---
+// --- Implementation for Primitives ---
 
 #[derive(Clone)]
 struct PrimitiveJob<T>(T);
@@ -280,7 +280,7 @@ impl<T: ParcodeVisitor> ParcodeVisitor for &T {
     }
 }
 
-/// Macro para implementar ParcodeVisitor en tipos primitivos masivamente.
+/// Macro to implement ParcodeVisitor for primitive types massively.
 macro_rules! impl_primitive_visitor {
     ($($t:ty),*) => {
         $(

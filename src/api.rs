@@ -1,4 +1,8 @@
-//! PLACEHOLDER
+//! High-level API for Parcode.
+//!
+//! This module provides the primary entry points for reading and writing Parcode files.
+//! It offers a builder-style interface for configuration and simple functions for
+//! common operations.
 
 use crate::error::Result;
 use crate::executor::execute_graph;
@@ -9,19 +13,31 @@ use crate::reader::{ParcodeNative, ParcodeReader};
 use crate::visitor::ParcodeVisitor;
 use std::path::Path;
 
-/// PLACEHOLDER
+/// The main entry point for configuring and executing Parcode operations.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use parcode::Parcode;
+///
+/// let data = vec![1, 2, 3];
+/// Parcode::save("data.par", &data).unwrap();
+/// let loaded: Vec<i32> = Parcode::read("data.par").unwrap();
+/// ```
 #[derive(Debug, Default)]
 pub struct Parcode {
     use_compression: bool,
 }
 
 impl Parcode {
-    /// PLACEHOLDER
+    /// Creates a new `Parcode` builder with default settings.
     pub fn builder() -> Self {
         Self::default()
     }
 
-    /// PLACEHOLDER
+    /// Enables or disables compression.
+    ///
+    /// If enabled, the default compression algorithm (usually LZ4 if enabled) will be used.
     pub fn compression(mut self, enable: bool) -> Self {
         self.use_compression = enable;
         self
@@ -40,7 +56,10 @@ impl Parcode {
         // Dispatches to Vec::from_node (Parallel) or T::from_node (Simple)
         T::from_node(&root)
     }
-    /// PLACEHOLDER
+
+    /// Saves an object to a file using default settings.
+    ///
+    /// This is a convenience wrapper around `write`.
     pub fn save<T, P>(path: P, root_object: &T) -> Result<()>
     where
         T: ParcodeVisitor + Sync,
