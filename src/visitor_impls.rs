@@ -79,7 +79,7 @@ where
     }
 
     fn estimated_size(&self) -> usize {
-        self.data.len() * std::mem::size_of::<T>()
+        std::mem::size_of_val(self.data)
     }
 }
 
@@ -105,7 +105,7 @@ where
             // 1. Measure data cost (Sampling)
             // We take up to 8 elements to estimate the real size (useful for Strings/Heap).
             let sample_count = total_len.min(8);
-            let sample_slice = &self[0..sample_count];
+            let sample_slice = self.get(0..sample_count).unwrap_or(&[]);
 
             let sample_size_bytes =
                 match bincode::serde::encode_to_vec(sample_slice, bincode::config::standard()) {
@@ -123,7 +123,8 @@ where
             // 2. Calculate Strategies
 
             // Strategy A: Optimized for I/O (Fill 128KB chunks)
-            let count_by_io = (TARGET_SHARD_SIZE_BYTES / avg_item_size).max(1) as usize;
+            let count_by_io = usize::try_from((TARGET_SHARD_SIZE_BYTES / avg_item_size).max(1))
+                .unwrap_or(usize::MAX);
 
             // Strategy B: Optimized for CPU (Fill cores)
             // We want enough tasks to keep Rayon busy.
@@ -142,7 +143,8 @@ where
 
             if estimated_chunk_size < MIN_SHARD_SIZE_BYTES {
                 // Too small. Scale to meet the 4KB minimum.
-                items_per_shard = (MIN_SHARD_SIZE_BYTES / avg_item_size).max(1) as usize;
+                items_per_shard = usize::try_from((MIN_SHARD_SIZE_BYTES / avg_item_size).max(1))
+                    .unwrap_or(usize::MAX);
             } else {
                 items_per_shard = candidate_count;
             }
@@ -157,11 +159,12 @@ where
         let mut shard_runs: Vec<ShardRun> = Vec::new();
         if !chunks.is_empty() {
             let mut current_run = ShardRun {
-                item_count: chunks[0].len() as u32,
+                item_count: u32::try_from(chunks.first().map(|c| c.len()).unwrap_or(0))
+                    .unwrap_or(u32::MAX),
                 repeat: 0,
             };
             for chunk in &chunks {
-                let len = chunk.len() as u32;
+                let len = u32::try_from(chunk.len()).unwrap_or(u32::MAX);
                 if len == current_run.item_count {
                     current_run.repeat += 1;
                 } else {
@@ -269,7 +272,7 @@ impl<T: ParcodeVisitor> ParcodeVisitor for &T {
         parent_id: Option<ChunkId>,
         config_override: Option<JobConfig>,
     ) {
-        (**self).visit(graph, parent_id, config_override)
+        (**self).visit(graph, parent_id, config_override);
     }
 
     fn create_job<'a>(
@@ -280,7 +283,7 @@ impl<T: ParcodeVisitor> ParcodeVisitor for &T {
     }
 }
 
-/// Macro to implement ParcodeVisitor for primitive types massively.
+/// Macro to implement `ParcodeVisitor` for primitive types massively.
 macro_rules! impl_primitive_visitor {
     ($($t:ty),*) => {
         $(

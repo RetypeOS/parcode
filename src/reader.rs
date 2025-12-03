@@ -96,25 +96,53 @@ impl ParcodeReader {
         let mmap = unsafe { Mmap::map(&file)? };
 
         // Read Global Header (Located at the very end of the file)
-        let header_start = (file_size as usize) - GLOBAL_HEADER_SIZE;
-        let header_bytes = &mmap[header_start..];
+        let header_start = usize::try_from(file_size)
+            .map_err(|_| ParcodeError::Format("File too large for address space".into()))?
+            - GLOBAL_HEADER_SIZE;
+        let header_bytes = mmap
+            .get(header_start..)
+            .ok_or_else(|| ParcodeError::Format("Header start out of bounds".into()))?;
 
-        if header_bytes[0..4] != MAGIC_BYTES {
+        if header_bytes.get(0..4) != Some(&MAGIC_BYTES) {
             return Err(ParcodeError::Format(
                 "Invalid Magic Bytes. Not a Parcode file.".into(),
             ));
         }
 
-        let version = u16::from_le_bytes(header_bytes[4..6].try_into().unwrap());
+        let version = u16::from_le_bytes(
+            header_bytes
+                .get(4..6)
+                .ok_or_else(|| ParcodeError::Format("Version out of bounds".into()))?
+                .try_into()
+                .map_err(|_| ParcodeError::Format("Failed to read version".into()))?,
+        );
         if version != 4 {
             return Err(ParcodeError::Format(format!(
                 "Unsupported version: {version}. Expected V4."
             )));
         }
 
-        let root_offset = u64::from_le_bytes(header_bytes[6..14].try_into().unwrap());
-        let root_length = u64::from_le_bytes(header_bytes[14..22].try_into().unwrap());
-        let checksum = u32::from_le_bytes(header_bytes[22..26].try_into().unwrap());
+        let root_offset = u64::from_le_bytes(
+            header_bytes
+                .get(6..14)
+                .ok_or_else(|| ParcodeError::Format("Root offset out of bounds".into()))?
+                .try_into()
+                .map_err(|_| ParcodeError::Format("Failed to read root_offset".into()))?,
+        );
+        let root_length = u64::from_le_bytes(
+            header_bytes
+                .get(14..22)
+                .ok_or_else(|| ParcodeError::Format("Root length out of bounds".into()))?
+                .try_into()
+                .map_err(|_| ParcodeError::Format("Failed to read root_length".into()))?,
+        );
+        let checksum = u32::from_le_bytes(
+            header_bytes
+                .get(22..26)
+                .ok_or_else(|| ParcodeError::Format("Checksum out of bounds".into()))?
+                .try_into()
+                .map_err(|_| ParcodeError::Format("Failed to read checksum".into()))?,
+        );
 
         Ok(Self {
             mmap: Arc::new(mmap),
@@ -157,10 +185,16 @@ impl ParcodeReader {
                 offset, length
             )));
         }
-        let chunk_end = (offset + length) as usize;
+        let chunk_end = usize::try_from(offset + length)
+            .map_err(|_| ParcodeError::Format("Chunk end exceeds address space".into()))?;
 
         // Read the MetaByte (Last byte of the chunk)
-        let meta = MetaByte::from_byte(self.mmap[chunk_end - 1]);
+        let meta = MetaByte::from_byte(
+            *self
+                .mmap
+                .get(chunk_end - 1)
+                .ok_or_else(|| ParcodeError::Format("MetaByte out of bounds".into()))?,
+        );
 
         let mut child_count = 0;
         let mut payload_end = chunk_end - 1; // Default: payload ends just before MetaByte
@@ -172,7 +206,10 @@ impl ParcodeReader {
             }
 
             let count_start = chunk_end - 5;
-            let child_count_bytes = &self.mmap[count_start..count_start + 4];
+            let child_count_bytes = self
+                .mmap
+                .get(count_start..count_start + 4)
+                .ok_or_else(|| ParcodeError::Format("Child count out of bounds".into()))?;
             child_count = Self::read_u32(child_count_bytes)?;
 
             let footer_size = child_count as usize * ChildRef::SIZE;
@@ -230,8 +267,10 @@ impl<'a> ChunkNode<'a> {
     /// This returns `Cow`, so if no compression was used, it returns a direct reference
     /// to the mmap (Zero-Copy). If compressed, it allocates the decompressed buffer.
     pub fn read_raw(&self) -> Result<Cow<'a, [u8]>> {
-        let start = self.offset as usize;
-        let end = self.payload_end_offset as usize;
+        let start = usize::try_from(self.offset)
+            .map_err(|_| ParcodeError::Format("Offset exceeds address space".into()))?;
+        let end = usize::try_from(self.payload_end_offset)
+            .map_err(|_| ParcodeError::Format("End offset exceeds address space".into()))?;
 
         if end > self.reader.mmap.len() {
             return Err(ParcodeError::Format(
@@ -239,7 +278,11 @@ impl<'a> ChunkNode<'a> {
             ));
         }
 
-        let raw = &self.reader.mmap[start..end];
+        let raw = self
+            .reader
+            .mmap
+            .get(start..end)
+            .ok_or_else(|| ParcodeError::Format("Payload out of bounds".into()))?;
         let method_id = self.meta.compression_method();
 
         // Delegate decompression to the registry.
@@ -251,7 +294,7 @@ impl<'a> ChunkNode<'a> {
     ///
     /// This allows manual traversal of the dependency graph (e.g., iterating over specific shards).
     /// Note: This does not deserialize the children, only loads their metadata (offsets).
-    pub fn children(&self) -> Result<Vec<ChunkNode<'a>>> {
+    pub fn children(&self) -> Result<Vec<Self>> {
         let mut list = Vec::with_capacity(self.child_count as usize);
         for i in 0..self.child_count {
             list.push(self.get_child_by_index(i as usize)?);
@@ -294,8 +337,15 @@ impl<'a> ChunkNode<'a> {
         }
 
         // 1. Parse metadata from header
-        let total_items = u64::from_le_bytes(payload[0..8].try_into().unwrap()) as usize;
-        let runs_data = &payload[8..];
+        let total_items = usize::try_from(u64::from_le_bytes(
+            payload
+                .get(0..8)
+                .ok_or_else(|| ParcodeError::Format("Payload too short for header".into()))?
+                .try_into()
+                .map_err(|_| ParcodeError::Format("Failed to read total_items".into()))?,
+        ))
+        .map_err(|_| ParcodeError::Format("total_items exceeds usize range".into()))?;
+        let runs_data = payload.get(8..).unwrap_or(&[]);
         let shard_runs: Vec<ShardRun> =
             bincode::serde::decode_from_slice(runs_data, bincode::config::standard())
                 .map(|(obj, _)| obj)
@@ -391,10 +441,11 @@ impl<'a> ChunkNode<'a> {
 
     /// Returns the logical number of items in this container.
     pub fn len(&self) -> u64 {
-        if let Ok(payload) = self.read_raw() {
-            if payload.len() >= 8 {
-                return u64::from_le_bytes(payload[0..8].try_into().unwrap());
-            }
+        if let Ok(payload) = self.read_raw()
+            && payload.len() >= 8
+            && let Some(bytes) = payload.get(0..8).and_then(|s| s.try_into().ok())
+        {
+            return u64::from_le_bytes(bytes);
         }
         0
     }
@@ -414,7 +465,7 @@ impl<'a> ChunkNode<'a> {
             return Err(ParcodeError::Format("Not a valid container".into()));
         }
 
-        let runs_data = &payload[8..];
+        let runs_data = payload.get(8..).unwrap_or(&[]);
         let shard_runs: Vec<ShardRun> =
             bincode::serde::decode_from_slice(runs_data, bincode::config::standard())
                 .map(|(obj, _)| obj)
@@ -442,8 +493,15 @@ impl<'a> ChunkNode<'a> {
             return Err(ParcodeError::Format("Not a valid container".into()));
         }
 
-        let total_len = u64::from_le_bytes(payload[0..8].try_into().unwrap()) as usize;
-        let runs_data = &payload[8..];
+        let total_len = usize::try_from(u64::from_le_bytes(
+            payload
+                .get(0..8)
+                .ok_or_else(|| ParcodeError::Format("Payload too short".into()))?
+                .try_into()
+                .map_err(|_| ParcodeError::Format("Failed to read total_len".into()))?,
+        ))
+        .map_err(|_| ParcodeError::Format("total_len exceeds usize range".into()))?;
+        let runs_data = payload.get(8..).unwrap_or(&[]);
         let shard_runs: Vec<ShardRun> =
             bincode::serde::decode_from_slice(runs_data, bincode::config::standard())
                 .map(|(obj, _)| obj)
@@ -462,20 +520,25 @@ impl<'a> ChunkNode<'a> {
 
     // --- INTERNAL HELPERS ---
 
-    /// Retrieves a child ChunkNode by its index in the footer.
-    fn get_child_by_index(&self, index: usize) -> Result<ChunkNode<'a>> {
+    /// Retrieves a child `ChunkNode` by its index in the footer.
+    fn get_child_by_index(&self, index: usize) -> Result<Self> {
         if index >= self.child_count as usize {
             return Err(ParcodeError::Format("Child index out of bounds".into()));
         }
-        let footer_start = self.payload_end_offset as usize;
+        let footer_start = usize::try_from(self.payload_end_offset)
+            .map_err(|_| ParcodeError::Format("Offset exceeds usize range".into()))?;
         let entry_start = footer_start + (index * ChildRef::SIZE);
-        let bytes = &self.reader.mmap[entry_start..entry_start + ChildRef::SIZE];
+        let bytes = self
+            .reader
+            .mmap
+            .get(entry_start..entry_start + ChildRef::SIZE)
+            .ok_or_else(|| ParcodeError::Format("ChildRef index out of bounds".into()))?;
 
         let r = ChildRef::from_bytes(bytes)?;
         self.reader.get_chunk(r.offset, r.length)
     }
 
-    /// Maps a global item index to a specific (shard_index, internal_index).
+    /// Maps a global item index to a specific (`shard_index`, `internal_index`).
     fn resolve_rle_index(&self, global_index: usize, runs: &[ShardRun]) -> Result<(usize, usize)> {
         let mut current_base = 0;
         let mut shard_base = 0;

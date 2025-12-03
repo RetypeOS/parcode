@@ -27,7 +27,7 @@ impl MetaByte {
     const CHUNKABLE_MASK: u8 = 0b0000_0001; // Bit 0
     const COMPRESSION_MASK: u8 = 0b0000_1110; // Bits 1-3
 
-    /// Creates a new MetaByte.
+    /// Creates a new `MetaByte`.
     pub fn new(is_chunkable: bool, compression_id: u8) -> Self {
         let mut byte = 0;
         if is_chunkable {
@@ -70,7 +70,7 @@ pub struct ChildRef {
 }
 
 impl ChildRef {
-    /// The size in bytes of a serialized ChildRef.
+    /// The size in bytes of a serialized `ChildRef`.
     pub const SIZE: usize = 16; // 8 bytes offset + 8 bytes length
 
     /// Serializes to a fixed-size byte array (Little Endian).
@@ -86,8 +86,18 @@ impl ChildRef {
         if bytes.len() < Self::SIZE {
             return Err(ParcodeError::Format("Buffer too small for ChildRef".into()));
         }
-        let offset = u64::from_le_bytes(bytes[0..8].try_into().unwrap_or([0; 8]));
-        let length = u64::from_le_bytes(bytes[8..16].try_into().unwrap_or([0; 8]));
+        let offset = u64::from_le_bytes(
+            bytes
+                .get(0..8)
+                .and_then(|s| s.try_into().ok())
+                .unwrap_or([0; 8]),
+        );
+        let length = u64::from_le_bytes(
+            bytes
+                .get(8..16)
+                .and_then(|s| s.try_into().ok())
+                .unwrap_or([0; 8]),
+        );
         Ok(Self { offset, length })
     }
 }
@@ -109,7 +119,7 @@ pub struct GlobalHeader {
 }
 
 impl GlobalHeader {
-    /// Creates a new GlobalHeader.
+    /// Creates a new `GlobalHeader`.
     pub fn new(root_offset: u64, root_length: u64) -> Self {
         Self {
             magic: MAGIC_BYTES,

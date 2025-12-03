@@ -8,7 +8,7 @@
 //use crate::graph::job::SerializationJob;
 use crate::graph::{ChunkId, JobConfig, SerializationJob, TaskGraph};
 
-/// A trait for types that can be structurally visited to build a Parcode TaskGraph.
+/// A trait for types that can be structurally visited to build a Parcode `TaskGraph`.
 ///
 /// This is distinct from `serde::Serialize`. Instead of writing bytes,
 /// this trait writes *Nodes* into the graph.

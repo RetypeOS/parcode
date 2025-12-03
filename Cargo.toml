@@ -8,15 +8,16 @@ repository = "https://github.com/retypeos/parcode"
 readme = "README.md"
 keywords = ["parallel", "performance", "serialization", "mmap"]
 categories = ["concurrency", "filesystem"]
+license = "MIT"
 
 [dependencies]
 # Local
-parcode-derive = { path = "parcode-derive" } 
+parcode-derive = { path = "parcode-derive" }
 # Third
 bincode = { version = "2.0.1", features = ["serde"] }
 memmap2 = "0.9.9"
 rayon = "1.11.0"
-serde = "1.0.228"
+serde = { version = "1.0.228", features = ["derive", "rc"] }
 anyhow = "1.0.100"
 crossbeam-channel = "0.5.15"
 #twox-hash = "2.1.2"

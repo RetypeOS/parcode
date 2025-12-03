@@ -6,7 +6,7 @@ use std::fmt;
 pub struct ChunkId(u32); // u32 is sufficient for 4 billion chunks per file.
 
 impl ChunkId {
-    /// Creates a new ChunkId.
+    /// Creates a new `ChunkId`.
     /// Restrict visibility to the graph module to prevent arbitrary creation.
     pub(crate) fn new(id: u32) -> Self {
         Self(id)

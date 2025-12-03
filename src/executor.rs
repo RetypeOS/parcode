@@ -69,7 +69,7 @@ pub fn execute_graph<'a>(
         .filter(|n| n.atomic_deps.load(Ordering::SeqCst) == 0)
         .collect();
 
-    if leaves.is_empty() && graph.len() > 0 {
+    if leaves.is_empty() && !graph.is_empty() {
         return Err(ParcodeError::Internal(
             "Graph has nodes but no leaves. Cyclic dependency detected.".into(),
         ));
@@ -99,9 +99,7 @@ pub fn execute_graph<'a>(
         .lock()
         .map_err(|_| ParcodeError::Internal("Root result mutex poisoned".into()))?;
 
-    root_guard
-        .clone()
-        .ok_or_else(|| ParcodeError::Internal("Graph execution incomplete".into()))
+    (*root_guard).ok_or_else(|| ParcodeError::Internal("Graph execution incomplete".into()))
 }
 
 /// The worker function executed by Rayon threads.
@@ -197,7 +195,7 @@ fn process_node<'scope, 'a>(
         for child in &children_refs {
             final_buffer.extend_from_slice(&child.to_bytes());
         }
-        let count = children_refs.len() as u32;
+        let count = u32::try_from(children_refs.len()).unwrap_or(u32::MAX);
         final_buffer.extend_from_slice(&count.to_le_bytes());
     }
     let meta = MetaByte::new(is_chunkable, compressor.id());

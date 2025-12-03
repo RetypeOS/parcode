@@ -3,7 +3,7 @@ use crate::format::ChildRef;
 
 /// Execution configuration for a specific node.
 /// Kept small (1 byte) for efficient pass-by-copy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JobConfig {
     /// Compression algorithm ID.
     /// 0 = No Compression (Default)
@@ -12,11 +12,11 @@ pub struct JobConfig {
     pub compression_id: u8,
 }
 
-impl Default for JobConfig {
-    fn default() -> Self {
-        Self { compression_id: 0 }
-    }
-}
+//impl Default for JobConfig {
+//    fn default() -> Self {
+//        Self { compression_id: 0 }
+//    }
+//}
 
 /// Represents a unit of work: a piece of data that knows how to serialize itself.
 ///

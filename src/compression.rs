@@ -16,7 +16,7 @@ const MIN_COMPRESSION_THRESHOLD: usize = 64;
 /// Implementors of this trait provide the logic to compress and decompress
 /// byte buffers. Each compressor is identified by a unique ID.
 pub trait Compressor: Send + Sync + std::fmt::Debug {
-    /// Returns the unique ID stored in the MetaByte (Bits 1-3).
+    /// Returns the unique ID stored in the `MetaByte` (Bits 1-3).
     /// 0 is reserved for No-Compression.
     fn id(&self) -> u8;
 
@@ -56,7 +56,7 @@ impl Compressor for NoCompression {
     }
 }
 
-// --- LZ4 Implementation (Optional) ---
+// --- LZ4 Implementation ---
 
 #[cfg(feature = "lz4_flex")]
 /// A compressor using the LZ4 algorithm.
@@ -121,10 +121,19 @@ impl CompressorRegistry {
     /// If a compressor with the same ID is already registered, it will be overwritten.
     pub fn register(&mut self, algo: Box<dyn Compressor>) {
         let id = algo.id() as usize;
+
+        // Ensure the vector is large enough to hold the new ID.
         if id >= self.algorithms.len() {
             self.algorithms.resize_with(id + 1, || None);
         }
-        self.algorithms[id] = Some(algo);
+
+        // `resize_with` guarantees the index is valid.
+        let slot = self
+            .algorithms
+            .get_mut(id)
+            .expect("Registry vector resized but index not found. This is a bug.");
+
+        *slot = Some(algo);
     }
 
     /// Retrieves a compressor by its ID.
@@ -132,12 +141,13 @@ impl CompressorRegistry {
     /// # Errors
     /// Returns `ParcodeError::Compression` if the ID is not registered.
     pub fn get(&self, id: u8) -> Result<&dyn Compressor> {
-        let idx = id as usize;
-        if idx < self.algorithms.len() {
-            if let Some(algo) = &self.algorithms[idx] {
-                return Ok(algo.as_ref());
-            }
+        let idx = usize::from(id);
+        if idx < self.algorithms.len()
+            && let Some(algo) = self.algorithms.get(idx).and_then(|opt| opt.as_ref())
+        {
+            return Ok(algo.as_ref());
         }
+
         Err(ParcodeError::Compression(format!(
             "Algorithm ID {} is not registered or available",
             id
