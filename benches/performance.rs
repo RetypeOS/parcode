@@ -108,7 +108,7 @@ fn generate_data(count: usize) -> BenchCollection {
 // --- BENCHMARKS ---
 
 fn bench_writers(c: &mut Criterion) {
-    let item_count = 100_000;
+    let item_count = 200_000;
     let data = generate_data(item_count);
     let raw_data = &data.0; // For bincode
 
@@ -143,7 +143,7 @@ fn bench_writers(c: &mut Criterion) {
 }
 
 fn bench_readers(c: &mut Criterion) {
-    let item_count = 100_000;
+    let item_count = 200_000;
 
     println!("Readers Item count: {}", item_count);
 

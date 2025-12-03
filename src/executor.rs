@@ -157,10 +157,10 @@ fn process_node<'scope, 'a>(
 
     // --- STEP 2: COMPRESSION (CPU BOUND) ---
 
-    // 1. Obtener Config del Job
+    // 1. Get Job Config
     let config = node.job.config();
 
-    // 2. Buscar Algoritmo
+    // 2. Find Algorithm
     let compressor = match ctx.registry.get(config.compression_id) {
         Ok(c) => c,
         Err(e) => {
@@ -169,7 +169,7 @@ fn process_node<'scope, 'a>(
         }
     };
 
-    // 3. Comprimir
+    // 3. Compress
     let compressed_payload = match compressor.compress(&raw_payload) {
         Ok(c) => c,
         Err(e) => {
@@ -221,7 +221,7 @@ fn process_node<'scope, 'a>(
         length: total_size as u64,
     };
 
-    // --- STEP 5: PROPAGATION (REACTIVE SCHEDULING) ---
+    // --- STEP 5: PROPAGATION ---
 
     if let Some(parent_id) = node.parent {
         let parent_node = ctx.graph.get_node(parent_id);

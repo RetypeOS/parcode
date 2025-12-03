@@ -10,22 +10,24 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// It holds a `SerializationJob` which may contain references to user data (`'a`).
 #[derive(Debug)]
 pub struct Node<'a> {
-    /// PLACEHOLDER
+    /// The unique identifier for this node.
     pub id: ChunkId,
-    /// PLACEHOLDER
+    /// The ID of the parent node (if any).
+    /// Currently, the graph is a tree, so a node has at most one parent.
     pub parent: Option<ChunkId>,
-    /// PLACEHOLDER
+    /// The number of dependencies (children) that must complete before this node can run.
     pub atomic_deps: AtomicUsize,
 
     /// The job to execute. Note the `+ 'a` bound.
     pub job: Box<dyn SerializationJob<'a> + 'a>,
 
-    /// PLACEHOLDER
+    /// A list of results from completed children.
+    /// This is populated as children finish execution.
     pub completed_children: Mutex<Vec<(ChunkId, ChildRef)>>,
 }
 
 impl<'a> Node<'a> {
-    /// PLACEHOLDER
+    /// Creates a new Node.
     pub fn new(id: ChunkId, job: Box<dyn SerializationJob<'a> + 'a>) -> Self {
         Self {
             id,
@@ -36,7 +38,9 @@ impl<'a> Node<'a> {
         }
     }
 
-    /// PLACEHOLDER
+    /// Registers a completed child's result.
+    ///
+    /// This is called by the executor when a child node finishes.
     pub fn register_child_result(&self, child_id: ChunkId, child_ref: ChildRef) -> Result<()> {
         let mut lock = self
             .completed_children
@@ -57,12 +61,14 @@ pub struct TaskGraph<'a> {
 }
 
 impl<'a> TaskGraph<'a> {
-    /// PLACEHOLDER
+    /// Creates a new, empty TaskGraph.
     pub fn new() -> Self {
         Self { nodes: Vec::new() }
     }
 
-    /// PLACEHOLDER
+    /// Adds a new node to the graph.
+    ///
+    /// Returns the `ChunkId` of the newly created node.
     pub fn add_node(&mut self, job: Box<dyn SerializationJob<'a> + 'a>) -> ChunkId {
         let id = ChunkId::new(self.nodes.len() as u32);
         let node = Node::new(id, job);
@@ -70,7 +76,9 @@ impl<'a> TaskGraph<'a> {
         id
     }
 
-    /// PLACEHOLDER
+    /// Links a parent node to a child node.
+    ///
+    /// This increments the parent's dependency count and sets the child's parent pointer.
     pub fn link_parent_child(&mut self, parent_id: ChunkId, child_id: ChunkId) {
         let parent_node = &self.nodes[parent_id.as_u32() as usize];
         parent_node.atomic_deps.fetch_add(1, Ordering::SeqCst);
@@ -79,17 +87,17 @@ impl<'a> TaskGraph<'a> {
         child_node.parent = Some(parent_id);
     }
 
-    /// PLACEHOLDER
+    /// Retrieves a reference to a node by its ID.
     pub fn get_node(&self, id: ChunkId) -> &Node<'a> {
         &self.nodes[id.as_u32() as usize]
     }
 
-    /// PLACEHOLDER
+    /// Returns the number of nodes in the graph.
     pub fn len(&self) -> usize {
         self.nodes.len()
     }
 
-    /// PLACEHOLDER
+    /// Returns a slice containing all nodes in the graph.
     pub fn nodes(&self) -> &[Node<'a>] {
         &self.nodes
     }

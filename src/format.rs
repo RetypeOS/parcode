@@ -96,13 +96,13 @@ impl ChildRef {
 /// It points to the Root Chunk, which is the entry point for the graph.
 #[derive(Debug, Clone, Copy)]
 pub struct GlobalHeader {
-    /// PLACEHOLDER
+    /// The magic bytes identifying the file format.
     pub magic: [u8; 4],
-    /// PLACEHOLDER
+    /// The version of the file format (currently 4).
     pub version: u16,
     /// Pointer to the final Root Chunk.
     pub root_offset: u64,
-    /// PLACEHOLDER
+    /// The total length of the Root Chunk.
     pub root_length: u64,
     /// Reserved for CRC/Checksum of the header itself.
     pub checksum: u32,

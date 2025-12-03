@@ -1,6 +1,8 @@
 //! Pluggable compression backend.
 //!
 //! Handles the transformation of raw byte buffers into compressed chunks.
+//! This module defines the `Compressor` trait and a registry for managing
+//! available compression algorithms.
 
 use crate::error::{ParcodeError, Result};
 use std::borrow::Cow;
@@ -10,21 +12,31 @@ use std::borrow::Cow;
 const MIN_COMPRESSION_THRESHOLD: usize = 64;
 
 /// Interface for compression algorithms.
+///
+/// Implementors of this trait provide the logic to compress and decompress
+/// byte buffers. Each compressor is identified by a unique ID.
 pub trait Compressor: Send + Sync + std::fmt::Debug {
     /// Returns the unique ID stored in the MetaByte (Bits 1-3).
     /// 0 is reserved for No-Compression.
     fn id(&self) -> u8;
 
     /// Compresses the data.
+    ///
+    /// Returns a `Cow<[u8]>` which may borrow the input if no compression is performed
+    /// or if the compressed size is larger than the original.
     fn compress<'a>(&self, data: &'a [u8]) -> Result<Cow<'a, [u8]>>;
 
     /// Decompresses the data.
+    ///
+    /// Returns a `Cow<[u8]>` containing the original data.
     fn decompress<'a>(&self, data: &'a [u8]) -> Result<Cow<'a, [u8]>>;
 }
 
 // --- No Compression (Pass-through) ---
 
 /// A compressor that performs no compression (pass-through).
+///
+/// This is the default strategy (ID 0). It simply passes the data through unchanged.
 #[derive(Debug, Clone, Copy)]
 pub struct NoCompression;
 
@@ -47,7 +59,10 @@ impl Compressor for NoCompression {
 // --- LZ4 Implementation (Optional) ---
 
 #[cfg(feature = "lz4_flex")]
-/// PLACEHOLDER
+/// A compressor using the LZ4 algorithm.
+///
+/// This compressor is available when the `lz4_flex` feature is enabled.
+/// It uses the `lz4_flex` crate for high-performance compression.
 #[derive(Debug, Clone, Copy)]
 pub struct Lz4Compressor;
 
@@ -58,10 +73,6 @@ impl Compressor for Lz4Compressor {
     }
 
     fn compress<'a>(&self, data: &'a [u8]) -> Result<Cow<'a, [u8]>> {
-        // FIX CRÍTICO: Eliminada la optimización de retorno temprano para datos pequeños.
-        // Si el Executor pide ID 1, debemos devolver formato LZ4 válido siempre.
-        // De lo contrario, el Reader intentará descomprimir datos crudos y fallará.
-
         let compressed = lz4_flex::compress_prepend_size(data);
         Ok(Cow::Owned(compressed))
     }
@@ -75,14 +86,20 @@ impl Compressor for Lz4Compressor {
 
 // --- REGISTRY ---
 
-/// Registro centralizado de algoritmos de compresión.
+/// Centralized registry for compression algorithms.
+///
+/// The registry maps algorithm IDs (stored in the file format) to
+/// specific `Compressor` implementations.
 #[derive(Debug)]
 pub struct CompressorRegistry {
     algorithms: Vec<Option<Box<dyn Compressor>>>,
 }
 
 impl CompressorRegistry {
-    /// PLACEHOLDER
+    /// Creates a new registry with default algorithms registered.
+    ///
+    /// *   ID 0: `NoCompression`
+    /// *   ID 1: `Lz4Compressor` (if `lz4_flex` feature is enabled)
     pub fn new() -> Self {
         let mut reg = Self {
             algorithms: (0..8).map(|_| None).collect(),
@@ -98,7 +115,10 @@ impl CompressorRegistry {
         reg
     }
 
-    /// PLACEHOLDER
+    /// Registers a new compressor.
+    ///
+    /// The compressor's ID (returned by `algo.id()`) determines its slot in the registry.
+    /// If a compressor with the same ID is already registered, it will be overwritten.
     pub fn register(&mut self, algo: Box<dyn Compressor>) {
         let id = algo.id() as usize;
         if id >= self.algorithms.len() {
@@ -107,7 +127,10 @@ impl CompressorRegistry {
         self.algorithms[id] = Some(algo);
     }
 
-    /// PLACEHOLDER
+    /// Retrieves a compressor by its ID.
+    ///
+    /// # Errors
+    /// Returns `ParcodeError::Compression` if the ID is not registered.
     pub fn get(&self, id: u8) -> Result<&dyn Compressor> {
         let idx = id as usize;
         if idx < self.algorithms.len() {
