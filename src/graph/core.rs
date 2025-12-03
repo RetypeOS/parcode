@@ -61,7 +61,7 @@ pub struct TaskGraph<'a> {
 }
 
 impl<'a> TaskGraph<'a> {
-    /// Creates a new, empty TaskGraph.
+    /// Creates a new, empty `TaskGraph`.
     pub fn new() -> Self {
         Self { nodes: Vec::new() }
     }
@@ -70,7 +70,7 @@ impl<'a> TaskGraph<'a> {
     ///
     /// Returns the `ChunkId` of the newly created node.
     pub fn add_node(&mut self, job: Box<dyn SerializationJob<'a> + 'a>) -> ChunkId {
-        let id = ChunkId::new(self.nodes.len() as u32);
+        let id = ChunkId::new(u32::try_from(self.nodes.len()).unwrap_or(u32::MAX));
         let node = Node::new(id, job);
         self.nodes.push(node);
         id
@@ -80,16 +80,31 @@ impl<'a> TaskGraph<'a> {
     ///
     /// This increments the parent's dependency count and sets the child's parent pointer.
     pub fn link_parent_child(&mut self, parent_id: ChunkId, child_id: ChunkId) {
-        let parent_node = &self.nodes[parent_id.as_u32() as usize];
+        let parent_node_idx = parent_id.as_u32() as usize;
+        let child_node_idx = child_id.as_u32() as usize;
+        let parent_node = self
+            .nodes
+            .get(parent_node_idx)
+            .expect("Parent node not found");
         parent_node.atomic_deps.fetch_add(1, Ordering::SeqCst);
 
-        let child_node = &mut self.nodes[child_id.as_u32() as usize];
+        let child_node = self
+            .nodes
+            .get_mut(child_node_idx)
+            .expect("Child node not found");
         child_node.parent = Some(parent_id);
     }
 
     /// Retrieves a reference to a node by its ID.
     pub fn get_node(&self, id: ChunkId) -> &Node<'a> {
-        &self.nodes[id.as_u32() as usize]
+        self.nodes
+            .get(id.as_u32() as usize)
+            .expect("Node ID out of bounds")
+    }
+
+    /// Returns true if the graph has no nodes.
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
     }
 
     /// Returns the number of nodes in the graph.

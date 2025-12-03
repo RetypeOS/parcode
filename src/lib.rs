@@ -12,10 +12,10 @@
 //!
 //! ## Core Concepts
 //!
-//! *   **TaskGraph:** The central structure representing the object graph to be serialized.
-//! *   **Executor:** The engine that drives the parallel execution of the graph (serialization -> compression -> I/O).
-//! *   **Reader:** The component responsible for mapping the file and reconstructing objects.
-//! *   **Visitor:** The trait that allows types to define how they should be split into graph nodes.
+//! *   **`TaskGraph`:** The central structure representing the object graph to be serialized.
+//! *   **`Executor`:** The engine that drives the parallel execution of the graph (serialization -> compression -> I/O).
+//! *   **`Reader`:** The component responsible for mapping the file and reconstructing objects.
+//! *   **`Visitor`:** The trait that allows types to define how they should be split into graph nodes.
 
 #![deny(unsafe_code)]
 #![deny(clippy::unwrap_used)]
