@@ -19,7 +19,7 @@ memmap2 = "0.9.9"
 rayon = "1.11.0"
 serde = { version = "1.0.228", features = ["derive", "rc"] }
 anyhow = "1.0.100"
-crossbeam-channel = "0.5.15"
+#crossbeam-channel = "0.5.15"
 #twox-hash = "2.1.2"
 
 # Optional

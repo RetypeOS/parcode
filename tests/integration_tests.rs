@@ -271,7 +271,7 @@ fn test_primitive_lifecycle() -> Result<()> {
         active: true,
     };
 
-    let file = NamedTempFile::new().unwrap();
+    let file = NamedTempFile::new()?;
 
     // WRITE
     Parcode::save(file.path(), &user)?;
@@ -290,7 +290,7 @@ fn test_massive_vector_sharding() -> Result<()> {
 
     println!("Generating {} items (~{} KB)...", count, (count * 8) / 1024);
 
-    let file = NamedTempFile::new().unwrap();
+    let file = NamedTempFile::new()?;
     Parcode::save(file.path(), &data)?;
 
     let loaded_data: Vec<u64> = Parcode::read(file.path())?;
@@ -333,7 +333,7 @@ fn test_nested_structures() -> Result<()> {
         ],
     };
 
-    let file = NamedTempFile::new().unwrap();
+    let file = NamedTempFile::new()?;
     Parcode::save(file.path(), &dir)?;
 
     let reader = ParcodeReader::open(file.path())?;
@@ -362,7 +362,7 @@ fn test_random_access_logic() -> Result<()> {
     let count = 50_000;
     let data: Vec<u64> = (0..count).map(|i| i as u64 * 10).collect();
 
-    let file = NamedTempFile::new().unwrap();
+    let file = NamedTempFile::new()?;
     Parcode::save(file.path(), &data)?;
 
     let reader = ParcodeReader::open(file.path())?;
@@ -384,25 +384,25 @@ fn test_random_access_logic() -> Result<()> {
 
 #[test]
 fn test_corruption_and_errors() -> Result<()> {
-    let file = NamedTempFile::new().unwrap();
+    let file = NamedTempFile::new()?;
     let path = file.path().to_owned();
 
     {
-        let _f = File::create(&path).unwrap();
+        let _f = File::create(&path)?;
     }
     let res = ParcodeReader::open(&path);
     assert!(matches!(res, Err(ParcodeError::Format(_))));
 
     {
-        let mut f = File::create(&path).unwrap();
+        let mut f = File::create(&path)?;
         let junk = vec![0u8; 100];
-        f.write_all(&junk).unwrap();
+        f.write_all(&junk)?;
     }
     let res = ParcodeReader::open(&path);
     if let Err(ParcodeError::Format(msg)) = res {
         assert!(msg.contains("Magic"));
     } else {
-        panic!("No detectó magic bytes inválidos");
+        assert!(false, "No detectó magic bytes inválidos");
     }
 
     let user = TestUser {
@@ -412,9 +412,9 @@ fn test_corruption_and_errors() -> Result<()> {
     };
     Parcode::save(&path, &user)?;
 
-    let len = std::fs::metadata(&path).unwrap().len();
-    let f = OpenOptions::new().write(true).open(&path).unwrap();
-    f.set_len(len / 2).unwrap();
+    let len = std::fs::metadata(&path)?.len();
+    let f = OpenOptions::new().write(true).open(&path)?;
+    f.set_len(len / 2)?;
 
     let res = ParcodeReader::open(&path);
     assert!(res.is_err());

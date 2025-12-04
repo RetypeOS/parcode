@@ -1,6 +1,6 @@
 //! Memory Profiling & Performance Example for Parcode V3.
 //!
-//! Run with: cargo run --example memory_test --release --features lz4_flex
+//! Run with: cargo run --example `memory_test` --release --features lz4_flex
 
 #![allow(missing_docs)]
 #![allow(unsafe_code)]

@@ -116,7 +116,7 @@ fn process_node<'scope, 'a>(
 
     // --- STEP 1: PREPARE DATA (CPU BOUND) ---
 
-    let mut completed_children_raw = {
+    let completed_children_raw = {
         let lock = node
             .completed_children
             .lock()
@@ -130,11 +130,20 @@ fn process_node<'scope, 'a>(
         }
     };
 
-    completed_children_raw.sort_by_key(|(id, _)| *id);
-
     // Retrieve the results from children (if any).
     // We lock the mutex, take the vector out (swap with empty) to consume it efficiently.
-    let children_refs: Vec<ChildRef> = completed_children_raw.into_iter().map(|(_, r)| r).collect();
+    // Since we used slots, the order is already correct. We just need to unwrap the Options.
+    let children_refs: Vec<ChildRef> = match completed_children_raw
+        .into_iter()
+        .map(|opt| opt.ok_or_else(|| ParcodeError::Internal("Missing child result".into())))
+        .collect()
+    {
+        Ok(v) => v,
+        Err(e) => {
+            ctx.signal_error(e);
+            return;
+        }
+    };
 
     // A node is "Chunkable" (Bit 0 set) if it had children dependencies.
     // Note: The optimizer pass (Phase 2) might have removed children and inlined them,
@@ -153,7 +162,7 @@ fn process_node<'scope, 'a>(
         }
     };
 
-    // --- STEP 2: COMPRESSION (CPU BOUND) ---
+    // --- STEP 2 & 3: COMPRESSION & FORMATTING (CPU BOUND) ---
 
     // 1. Get Job Config
     let config = node.job.config();
@@ -167,30 +176,26 @@ fn process_node<'scope, 'a>(
         }
     };
 
-    // 3. Compress
-    let compressed_payload = match compressor.compress(&raw_payload) {
-        Ok(c) => c,
-        Err(e) => {
-            ctx.signal_error(e);
-            return;
-        }
-    };
-
-    // --- STEP 3: FORMATTING (CPU BOUND) ---
-
-    // Construct the final binary block:
-    // [Compressed Data] + [Footer Table (if chunkable)] + [MetaByte]
-
-    // We need to calculate total size to allocate buffer once.
+    // 3. Prepare Final Buffer
+    // We need to calculate footer size to reserve space.
     let footer_size = if is_chunkable {
         (children_refs.len() * ChildRef::SIZE) + 4
     } else {
         0
     };
-    let total_size = compressed_payload.len() + footer_size + 1;
-    let mut final_buffer = Vec::with_capacity(total_size);
-    final_buffer.extend_from_slice(&compressed_payload);
 
+    // Heuristic: Allocate enough for raw payload + footer + meta.
+    // If compression shrinks it, great. If it expands (rare), it will realloc.
+    let estimated_capacity = raw_payload.len() + footer_size + 1;
+    let mut final_buffer = Vec::with_capacity(estimated_capacity);
+
+    // 4. Compress directly into final buffer
+    if let Err(e) = compressor.compress_append(&raw_payload, &mut final_buffer) {
+        ctx.signal_error(e);
+        return;
+    }
+
+    // 5. Append Footer
     if is_chunkable {
         for child in &children_refs {
             final_buffer.extend_from_slice(&child.to_bytes());
@@ -198,6 +203,8 @@ fn process_node<'scope, 'a>(
         let count = u32::try_from(children_refs.len()).unwrap_or(u32::MAX);
         final_buffer.extend_from_slice(&count.to_le_bytes());
     }
+
+    // 6. Append MetaByte
     let meta = MetaByte::new(is_chunkable, compressor.id());
     final_buffer.push(meta.as_u8());
 
@@ -216,7 +223,7 @@ fn process_node<'scope, 'a>(
     // Create the Reference for this newly written chunk.
     let my_ref = ChildRef {
         offset,
-        length: total_size as u64,
+        length: final_buffer.len() as u64,
     };
 
     // --- STEP 5: PROPAGATION ---
@@ -225,7 +232,8 @@ fn process_node<'scope, 'a>(
         let parent_node = ctx.graph.get_node(parent_id);
 
         // A. Register our result in the parent
-        if let Err(e) = parent_node.register_child_result(node.id, my_ref) {
+        let slot = node.parent_slot.expect("Parent set but slot missing");
+        if let Err(e) = parent_node.register_child_result(slot, my_ref) {
             ctx.signal_error(e);
             return;
         }

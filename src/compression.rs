@@ -30,6 +30,11 @@ pub trait Compressor: Send + Sync + std::fmt::Debug {
     ///
     /// Returns a `Cow<[u8]>` containing the original data.
     fn decompress<'a>(&self, data: &'a [u8]) -> Result<Cow<'a, [u8]>>;
+
+    /// Compresses the data and appends it to the output vector.
+    ///
+    /// This avoids intermediate allocations by writing directly to the final buffer.
+    fn compress_append(&self, data: &[u8], output: &mut Vec<u8>) -> Result<()>;
 }
 
 // --- No Compression (Pass-through) ---
@@ -53,6 +58,11 @@ impl Compressor for NoCompression {
     fn decompress<'a>(&self, data: &'a [u8]) -> Result<Cow<'a, [u8]>> {
         // Zero-copy: return reference to mmap
         Ok(Cow::Borrowed(data))
+    }
+
+    fn compress_append(&self, data: &[u8], output: &mut Vec<u8>) -> Result<()> {
+        output.extend_from_slice(data);
+        Ok(())
     }
 }
 
@@ -81,6 +91,46 @@ impl Compressor for Lz4Compressor {
         let vec = lz4_flex::decompress_size_prepended(data)
             .map_err(|e| ParcodeError::Compression(e.to_string()))?;
         Ok(Cow::Owned(vec))
+    }
+
+    fn compress_append(&self, data: &[u8], output: &mut Vec<u8>) -> Result<()> {
+        // Reserve space for the worst-case compressed size + 4 bytes for size prefix
+        // We can't easily use compress_prepend_size without allocation, so we implement it manually
+        // to write directly to output.
+
+        // Format: [u32 LE uncompressed_len] [compressed_data]
+        // Wait, lz4_flex::compress_prepend_size uses a specific format.
+        // It stores uncompressed size as u32 LE? No, it might be varint or just u32.
+        // Checking lz4_flex docs (recalled): it uses u32 little endian.
+
+        let uncompressed_len = data.len() as u32;
+        output.extend_from_slice(&uncompressed_len.to_le_bytes());
+
+        let start_idx = output.len();
+        let max_size = lz4_flex::block::get_maximum_output_size(data.len());
+        output.reserve(max_size);
+
+        // We need to write into the uninitialized part of the vector.
+        // Safe way: resize with 0, then compress_into, then truncate?
+        // Or use unsafe set_len.
+
+        // Let's use a temporary buffer approach if we want to be 100% safe without unsafe code,
+        // BUT that defeats the purpose.
+        // lz4_flex::compress_into writes to a slice.
+
+        let current_len = output.len();
+        output.resize(current_len + max_size, 0);
+
+        match lz4_flex::block::compress_into(data, &mut output[current_len..]) {
+            Ok(bytes_written) => {
+                output.truncate(current_len + bytes_written);
+                Ok(())
+            }
+            Err(e) => {
+                output.truncate(current_len); // Restore
+                Err(ParcodeError::Compression(e.to_string()))
+            }
+        }
     }
 }
 

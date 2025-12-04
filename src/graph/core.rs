@@ -21,9 +21,15 @@ pub struct Node<'a> {
     /// The job to execute. Note the `+ 'a` bound.
     pub job: Box<dyn SerializationJob<'a> + 'a>,
 
+    /// The slot index in the parent's `completed_children` vector.
+    /// This allows the child to write its result directly to the correct position.
+    pub parent_slot: Option<usize>,
+
     /// A list of results from completed children.
     /// This is populated as children finish execution.
-    pub completed_children: Mutex<Vec<(ChunkId, ChildRef)>>,
+    /// We use `Option` to allow random-access insertion without resizing issues,
+    /// though we push in order during linking.
+    pub completed_children: Mutex<Vec<Option<ChildRef>>>,
 }
 
 impl<'a> Node<'a> {
@@ -32,6 +38,7 @@ impl<'a> Node<'a> {
         Self {
             id,
             parent: None,
+            parent_slot: None,
             atomic_deps: AtomicUsize::new(0),
             job,
             completed_children: Mutex::new(Vec::new()),
@@ -41,12 +48,19 @@ impl<'a> Node<'a> {
     /// Registers a completed child's result.
     ///
     /// This is called by the executor when a child node finishes.
-    pub fn register_child_result(&self, child_id: ChunkId, child_ref: ChildRef) -> Result<()> {
+    pub fn register_child_result(&self, slot: usize, child_ref: ChildRef) -> Result<()> {
         let mut lock = self
             .completed_children
             .lock()
             .map_err(|_| ParcodeError::Internal(format!("Mutex poisoned on node {:?}", self.id)))?;
-        lock.push((child_id, child_ref));
+
+        let entry = lock.get_mut(slot).ok_or_else(|| {
+            ParcodeError::Internal(format!(
+                "Slot {} out of bounds for node {:?}",
+                slot, self.id
+            ))
+        })?;
+        *entry = Some(child_ref);
         Ok(())
     }
 }
@@ -88,11 +102,23 @@ impl<'a> TaskGraph<'a> {
             .expect("Parent node not found");
         parent_node.atomic_deps.fetch_add(1, Ordering::SeqCst);
 
+        // Reserve slot in parent
+        let slot = {
+            let mut guard = parent_node
+                .completed_children
+                .lock()
+                .expect("Mutex poisoned");
+            let idx = guard.len();
+            guard.push(None);
+            idx
+        };
+
         let child_node = self
             .nodes
             .get_mut(child_node_idx)
             .expect("Child node not found");
         child_node.parent = Some(parent_id);
+        child_node.parent_slot = Some(slot);
     }
 
     /// Retrieves a reference to a node by its ID.
