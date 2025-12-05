@@ -106,7 +106,7 @@ impl Compressor for Lz4Compressor {
         let uncompressed_len = data.len() as u32;
         output.extend_from_slice(&uncompressed_len.to_le_bytes());
 
-        let start_idx = output.len();
+        let _start_idx = output.len();
         let max_size = lz4_flex::block::get_maximum_output_size(data.len());
         output.reserve(max_size);
 
