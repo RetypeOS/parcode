@@ -126,7 +126,7 @@ impl GlobalHeader {
             version: 4,
             root_offset,
             root_length,
-            checksum: 0, // To be calculated if needed
+            checksum: 0,
         }
     }
 
