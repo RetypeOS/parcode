@@ -32,6 +32,7 @@ use std::sync::Arc;
 use crate::compression::CompressorRegistry;
 use crate::error::{ParcodeError, Result};
 use crate::format::{ChildRef, GLOBAL_HEADER_SIZE, GlobalHeader, MAGIC_BYTES, MetaByte};
+use crate::rt::ParcodeLazyRef;
 
 // --- TRAIT SYSTEM FOR AUTOMATIC STRATEGY SELECTION ---
 
@@ -229,6 +230,18 @@ impl ParcodeReader {
             child_count,
             payload_end_offset: offset + (payload_end as u64 - offset),
         })
+    }
+
+    /// Reads an object lazily, returning a generated Mirror struct.
+    /// This parses local fields immediately but keeps remote fields as handles.
+    ///
+    /// The returned Lazy object is tied to the lifetime of the `ParcodeReader`.
+    pub fn read_lazy<'a, T>(&'a self) -> Result<T::Lazy>
+    where
+        T: ParcodeLazyRef<'a>,
+    {
+        let root = self.root()?;
+        T::create_lazy(root)
     }
 }
 

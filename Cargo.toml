@@ -47,6 +47,12 @@ harness = false
 required-features = []
 doc = false
 
+[[bench]]
+name = "lazy_bench"
+harness = false
+required-features = []
+doc = false
+
 [lints]
 rust.keyword_idents_2024 = "forbid"
 rust.non_ascii_idents = "forbid"
