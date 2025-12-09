@@ -2,6 +2,7 @@
 
 //! Demuestra el acceso perezoso y granular a estructuras complejas.
 //! Run: cargo run --example lazy_loading
+#![allow(missing_docs)]
 
 use parcode::{Parcode, ParcodeObject, ParcodeReader};
 use serde::{Deserialize, Serialize};
@@ -11,18 +12,23 @@ use tempfile::NamedTempFile;
 /// Asset with chunkable data
 #[derive(Serialize, Deserialize, Clone, ParcodeObject)]
 struct BigAsset {
+    /// Asset ID
     id: u32,
+    /// Raw data
     #[parcode(chunkable)]
     data: Vec<u8>,
 }
 
 #[derive(Serialize, Deserialize, Clone, ParcodeObject)]
 struct GameWorld {
+    /// Name of the world
     world_name: String,
 
+    /// Skybox asset
     #[parcode(chunkable)]
     skybox: BigAsset,
 
+    /// Terrain asset
     #[parcode(chunkable)]
     terrain: BigAsset,
 }

@@ -1,5 +1,3 @@
-// parcode-derive/src/lib.rs
-
 //! # Parcode Derive Macros
 //!
 //! This crate provides the procedural macros for `parcode`. It automates the implementation
@@ -17,7 +15,6 @@ pub fn derive_parcode_object(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = input.ident;
 
-    // 1. Validation
     let data_struct = match input.data {
         Data::Struct(ds) => ds,
         _ => {
@@ -27,21 +24,23 @@ pub fn derive_parcode_object(input: TokenStream) -> TokenStream {
         }
     };
 
-    // 2. Field Classification
     let mut locals = Vec::new();
     let mut remotes = Vec::new();
 
     for field in data_struct.fields {
-        let (is_chunkable, compression_id) = match parse_attributes(&field.attrs) {
+        // Parse attributes.
+        let (is_chunkable, compression_id, is_map) = match parse_attributes(&field.attrs) {
             Ok(res) => res,
             Err(e) => return e.to_compile_error().into(),
         };
 
-        if is_chunkable {
+        // CORRECCIÓN: Si es 'map', implícitamente es chunkable (es un nodo hijo).
+        if is_chunkable || is_map {
             remotes.push(RemoteField {
                 ident: field.ident.clone().unwrap(),
                 ty: field.ty.clone(),
                 compression_id,
+                is_map, // NUEVO CAMPO
             });
         } else {
             locals.push(LocalField {
@@ -51,19 +50,17 @@ pub fn derive_parcode_object(input: TokenStream) -> TokenStream {
         }
     }
 
-    // 3. Code Generation
     let impl_visitor = generate_visitor(&name, &remotes, &locals);
     let impl_job = generate_serialization_job(&name, &locals);
     let impl_native = generate_native_reader(&name, &locals, &remotes);
-
-    // NEW: Generate Lazy Mirror Struct and Trait Impl
+    let impl_item = generate_parcode_item(&name, &locals, &remotes);
     let impl_lazy = generate_lazy_mirror(&name, &locals, &remotes);
 
-    // 4. Expansion
     let expanded = quote! {
         #impl_visitor
         #impl_job
         #impl_native
+        #impl_item
         #impl_lazy
     };
 
@@ -79,12 +76,15 @@ struct RemoteField {
     ident: syn::Ident,
     ty: syn::Type,
     compression_id: u8,
+    is_map: bool,
 }
 
-// --- Parsing Logic (Same as before) ---
-fn parse_attributes(attrs: &[Attribute]) -> syn::Result<(bool, u8)> {
+/// Parses attributes. Returns (is_chunkable, compression_id, is_map).
+fn parse_attributes(attrs: &[Attribute]) -> syn::Result<(bool, u8, bool)> {
     let mut is_chunkable = false;
+    let mut is_map = false;
     let mut compression_id = 0;
+
     for attr in attrs {
         if attr.path().is_ident("parcode") {
             attr.parse_nested_meta(|meta| {
@@ -92,6 +92,13 @@ fn parse_attributes(attrs: &[Attribute]) -> syn::Result<(bool, u8)> {
                     is_chunkable = true;
                     return Ok(());
                 }
+
+                // NUEVO: Soporte para #[parcode(map)]
+                if meta.path.is_ident("map") {
+                    is_map = true;
+                    return Ok(());
+                }
+
                 if meta.path.is_ident("compression") {
                     let value = meta.value()?;
                     let s: LitStr = value.parse()?;
@@ -103,47 +110,120 @@ fn parse_attributes(attrs: &[Attribute]) -> syn::Result<(bool, u8)> {
                     };
                     return Ok(());
                 }
-                Err(meta.error("Unknown parcode attribute key"))
+                Err(meta
+                    .error("Unknown parcode attribute key. Supported: chunkable, map, compression"))
             })?;
         }
     }
-    Ok((is_chunkable, compression_id))
+    Ok((is_chunkable, compression_id, is_map))
 }
 
-// --- Generator: ParcodeVisitor (Same as before) ---
+// --- Generator: ParcodeVisitor ---
 fn generate_visitor(
     name: &syn::Ident,
     remotes: &[RemoteField],
     _locals: &[LocalField],
 ) -> proc_macro2::TokenStream {
-    let visit_children = remotes.iter().map(|f| {
+    let visit_children_standalone = remotes.iter().map(|f| {
         let fname = &f.ident;
         let cid = f.compression_id;
-        let config_expr = if cid > 0 {
-            quote! { Some(parcode::graph::JobConfig { compression_id: #cid }) }
+        let is_map = f.is_map;
+
+        let config_expr = if cid > 0 || is_map {
+            quote! {
+                Some(parcode::graph::JobConfig {
+                    compression_id: #cid,
+                    is_map: #is_map
+                })
+            }
         } else {
             quote! { None }
         };
+
         quote! { self.#fname.visit(graph, Some(my_id), #config_expr); }
+    });
+
+    let visit_children_inlined = remotes.iter().map(|f| {
+        let fname = &f.ident;
+        let cid = f.compression_id;
+        let is_map = f.is_map;
+
+        let config_expr = if cid > 0 || is_map {
+            quote! {
+                Some(parcode::graph::JobConfig {
+                    compression_id: #cid,
+                    is_map: #is_map
+                })
+            }
+        } else {
+            quote! { None }
+        };
+
+        quote! { self.#fname.visit(graph, Some(pid), #config_expr); }
+    });
+
+    // Generate serialization statements for locals (reused from SerializationJob logic)
+    let serialize_locals = _locals.iter().map(|f| {
+        let fname = &f.ident;
+        quote! {
+            parcode::internal::bincode::serde::encode_into_std_write(
+                &self.#fname, writer, parcode::internal::bincode::config::standard()
+            ).map_err(|e| parcode::ParcodeError::Serialization(e.to_string()))?;
+        }
     });
 
     quote! {
         impl parcode::visitor::ParcodeVisitor for #name {
             fn visit<'a>(&'a self, graph: &mut parcode::graph::TaskGraph<'a>, parent_id: Option<parcode::graph::ChunkId>, config_override: Option<parcode::graph::JobConfig>) {
+                // Standard Visit: Create a node for self.
                 let job = self.create_job(config_override);
                 let my_id = graph.add_node(job);
-                if let Some(pid) = parent_id { graph.link_parent_child(pid, my_id); }
-                #(#visit_children)*
+                if let Some(pid) = parent_id {
+                    graph.link_parent_child(pid, my_id);
+                }
+                #(#visit_children_standalone)*
             }
+
+            fn visit_inlined<'a>(&'a self, graph: &mut parcode::graph::TaskGraph<'a>, pid: parcode::graph::ChunkId, _config_override: Option<parcode::graph::JobConfig>) {
+                // Inlined Visit: Do NOT create a node for self.
+                // Just visit chunkable children and link them to the provided parent (pid).
+                #(#visit_children_inlined)*
+            }
+
             fn create_job<'a>(&'a self, config_override: Option<parcode::graph::JobConfig>) -> Box<dyn parcode::graph::SerializationJob<'a> + 'a> {
                 let base_job = Box::new(self.clone());
                 if let Some(cfg) = config_override { Box::new(parcode::rt::ConfiguredJob::new(base_job, cfg)) } else { base_job }
+            }
+
+            fn serialize_shallow<W: std::io::Write>(&self, writer: &mut W) -> parcode::Result<()>
+            where
+                Self: serde::Serialize,
+            {
+                #(#serialize_locals)*
+                Ok(())
+            }
+
+            fn serialize_slice<W: std::io::Write>(slice: &[Self], writer: &mut W) -> parcode::Result<()>
+            where
+                Self: Sized + serde::Serialize,
+            {
+                let len = slice.len() as u64;
+                parcode::internal::bincode::serde::encode_into_std_write(
+                    &len,
+                    writer,
+                    parcode::internal::bincode::config::standard(),
+                ).map_err(|e| parcode::ParcodeError::Serialization(e.to_string()))?;
+
+                for item in slice {
+                    item.serialize_shallow(writer)?;
+                }
+                Ok(())
             }
         }
     }
 }
 
-// --- Generator: SerializationJob (Same as before) ---
+// --- Generator: SerializationJob ---
 fn generate_serialization_job(
     name: &syn::Ident,
     locals: &[LocalField],
@@ -221,6 +301,53 @@ fn generate_native_reader(
     }
 }
 
+// --- Generator: ParcodeItem ---
+fn generate_parcode_item(
+    name: &syn::Ident,
+    locals: &[LocalField],
+    remotes: &[RemoteField],
+) -> proc_macro2::TokenStream {
+    let read_locals = locals.iter().map(|f| {
+        let fname = &f.ident;
+        let fty = &f.ty;
+        quote! {
+            let #fname: #fty = parcode::internal::bincode::serde::decode_from_std_read(
+                reader, parcode::internal::bincode::config::standard()
+            ).map_err(|e| parcode::ParcodeError::Serialization(e.to_string()))?;
+        }
+    });
+
+    let read_remotes = remotes.iter().map(|f| {
+        let fname = &f.ident;
+        let fty = &f.ty;
+        quote! {
+            let child_node = children.next().ok_or_else(|| parcode::ParcodeError::Format(format!("Missing child for '{}'", stringify!(#fname))))?;
+            let #fname: #fty = parcode::reader::ParcodeNative::from_node(&child_node)?;
+        }
+    });
+
+    let mut field_names = Vec::new();
+    for f in locals {
+        field_names.push(&f.ident);
+    }
+    for f in remotes {
+        field_names.push(&f.ident);
+    }
+
+    quote! {
+        impl parcode::reader::ParcodeItem for #name {
+            fn read_from_shard(
+                reader: &mut std::io::Cursor<&[u8]>,
+                children: &mut std::vec::IntoIter<parcode::reader::ChunkNode<'_>>,
+            ) -> parcode::Result<Self> {
+                #(#read_locals)*
+                #(#read_remotes)*
+                Ok(Self { #(#field_names),* })
+            }
+        }
+    }
+}
+
 // --- NEW GENERATOR: LAZY MIRROR ---
 
 fn generate_lazy_mirror(
@@ -230,33 +357,30 @@ fn generate_lazy_mirror(
 ) -> proc_macro2::TokenStream {
     let lazy_name = syn::Ident::new(&format!("{}Lazy", name), name.span());
 
-    // Fields definition for the Lazy struct
     let lazy_fields = locals
         .iter()
         .map(|f| {
             let n = &f.ident;
             let t = &f.ty;
-            quote! { pub #n: #t } // Locals are stored directly
+            quote! { pub #n: #t }
         })
         .chain(remotes.iter().map(|f| {
             let n = &f.ident;
             let t = &f.ty;
-            // Recursive Lazy Type resolution
-            quote! { pub #n: <#t as parcode::rt::ParcodeLazyRef<'a>>::Lazy }
+
+            if f.is_map {
+                // CORRECCIÓN VITAL: Si es mapa, usamos ParcodeMapPromise explícitamente.
+                // Necesitamos extraer K y V del tipo HashMap<K,V>.
+                // Parsear generics en syn es complejo.
+                // ALTERNATIVA MEJOR: Usamos el trait ParcodeLazyRef que definimos para HashMap.
+                // HashMap implementa Lazy = ParcodeMapPromise.
+                // Así que la lógica es IDÉNTICA al caso estándar: <T>::Lazy.
+                quote! { pub #n: <#t as parcode::rt::ParcodeLazyRef<'a>>::Lazy }
+            } else {
+                quote! { pub #n: <#t as parcode::rt::ParcodeLazyRef<'a>>::Lazy }
+            }
         }));
 
-    // Logic to read locals (Same as Native Reader)
-    let read_locals_stmts = locals.iter().map(|f| {
-        let n = &f.ident;
-        let t = &f.ty;
-        quote! {
-            let #n: #t = parcode::internal::bincode::serde::decode_from_std_read(
-                &mut reader, parcode::internal::bincode::config::standard()
-            ).map_err(|e| parcode::ParcodeError::Serialization(e.to_string()))?;
-        }
-    });
-
-    // Logic to wrap remotes (Call create_lazy instead of deserializing)
     let assign_remotes_stmts = remotes.iter().map(|f| {
         let n = &f.ident;
         let t = &f.ty;
@@ -274,29 +398,38 @@ fn generate_lazy_mirror(
         field_names.push(&f.ident);
     }
 
+    let read_locals_stmts = locals.iter().map(|f| {
+        let n = &f.ident;
+        let t = &f.ty;
+        quote! {
+            let #n: #t = parcode::internal::bincode::serde::decode_from_std_read(
+                &mut reader, parcode::internal::bincode::config::standard()
+            ).map_err(|e| parcode::ParcodeError::Serialization(e.to_string()))?;
+        }
+    });
+
     quote! {
-        /// Generated Lazy Mirror for #name.
         #[derive(Debug)]
         pub struct #lazy_name<'a> {
-            #(#lazy_fields),*
+            #(#lazy_fields,)*
+            _marker: std::marker::PhantomData<&'a ()>,
         }
 
         impl<'a> parcode::rt::ParcodeLazyRef<'a> for #name {
             type Lazy = #lazy_name<'a>;
 
             fn create_lazy(node: parcode::reader::ChunkNode<'a>) -> parcode::Result<Self::Lazy> {
-                // 1. Eager Load Locals
                 let payload = node.read_raw()?;
                 let mut reader = std::io::Cursor::new(payload);
                 #(#read_locals_stmts)*
 
-                // 2. Lazy Wrap Remotes
                 let children = node.children()?;
                 let mut child_iter = children.into_iter();
                 #(#assign_remotes_stmts)*
 
                 Ok(#lazy_name {
-                    #(#field_names),*
+                    #(#field_names,)*
+                    _marker: std::marker::PhantomData,
                 })
             }
         }

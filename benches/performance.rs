@@ -2,7 +2,8 @@
 #![allow(missing_docs)]
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use parcode::{Parcode, ParcodeError, ParcodeReader, graph::*, visitor::ParcodeVisitor};
+use parcode::ParcodeObject;
+use parcode::{Parcode, ParcodeReader, graph::*, visitor::ParcodeVisitor};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::hint::black_box;
@@ -11,7 +12,7 @@ use tempfile::NamedTempFile;
 
 // --- SETUP ---
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, ParcodeObject)]
 struct BenchItem {
     id: u64,
     payload: Vec<u64>, // 1KB payload
@@ -46,32 +47,6 @@ impl ParcodeVisitor for BenchCollection {
     }
 }
 
-impl ParcodeVisitor for BenchItem {
-    fn visit(
-        &self,
-        _graph: &mut TaskGraph<'_>,
-        _parent_id: Option<ChunkId>,
-        _config_override: Option<JobConfig>,
-    ) {
-        // BenchItem is a simple leaf (payload).
-        // It does NOT create new child nodes.
-        // Its data is serialized within the VecShardJob of the parent collection.
-    }
-
-    fn create_job<'a>(
-        &'a self,
-        config_override: Option<JobConfig>,
-    ) -> Box<dyn SerializationJob<'a> + 'a> {
-        // Not used if visit does not create nodes, but correct impl provided
-        let base = Box::new(ItemJob(self.clone()));
-        if let Some(cfg) = config_override {
-            Box::new(parcode::rt::ConfiguredJob::new(base, cfg))
-        } else {
-            base
-        }
-    }
-}
-
 #[derive(Clone)]
 struct ContainerJob;
 impl SerializationJob<'_> for ContainerJob {
@@ -80,18 +55,6 @@ impl SerializationJob<'_> for ContainerJob {
     }
     fn estimated_size(&self) -> usize {
         0
-    }
-}
-
-#[derive(Clone)]
-struct ItemJob(BenchItem);
-impl SerializationJob<'_> for ItemJob {
-    fn execute(&self, _: &[parcode::format::ChildRef]) -> parcode::Result<Vec<u8>> {
-        bincode::serde::encode_to_vec(&self.0, bincode::config::standard())
-            .map_err(|e| ParcodeError::Serialization(e.to_string()))
-    }
-    fn estimated_size(&self) -> usize {
-        1024
     }
 }
 

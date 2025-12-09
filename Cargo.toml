@@ -20,7 +20,7 @@ rayon = "1.11.0"
 serde = { version = "1.0.228", features = ["derive", "rc"] }
 anyhow = "1.0.100"
 #crossbeam-channel = "0.5.15"
-#twox-hash = "2.1.2"
+twox-hash = "2.1.2"
 
 # Optional
 lz4_flex = { version = "0.11.5", optional = true }
@@ -49,6 +49,12 @@ doc = false
 
 [[bench]]
 name = "lazy_bench"
+harness = false
+required-features = []
+doc = false
+
+[[bench]]
+name = "map_access"
 harness = false
 required-features = []
 doc = false
