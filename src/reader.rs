@@ -23,7 +23,9 @@ use memmap2::Mmap;
 use rayon::prelude::*;
 use serde::{Deserialize, de::DeserializeOwned};
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::fs::File;
+use std::hash::Hash;
 use std::marker::PhantomData;
 use std::mem::{ManuallyDrop, MaybeUninit};
 use std::path::Path;
@@ -45,13 +47,124 @@ pub trait ParcodeNative: Sized {
     fn from_node(node: &ChunkNode<'_>) -> Result<Self>;
 }
 
+/// A trait for types that can be read from a shard (payload + children).
+pub trait ParcodeItem: Sized + Send + Sync + 'static {
+    /// Reads a single item from the shard payload and children.
+    fn read_from_shard(
+        reader: &mut std::io::Cursor<&[u8]>,
+        children: &mut std::vec::IntoIter<ChunkNode<'_>>,
+    ) -> Result<Self>;
+
+    /// Reads a slice of items from the shard payload and children.
+    fn read_slice_from_shard(
+        reader: &mut std::io::Cursor<&[u8]>,
+        children: &mut std::vec::IntoIter<ChunkNode<'_>>,
+    ) -> Result<Vec<Self>> {
+        // Default implementation: Read length, then loop
+        let len =
+            bincode::serde::decode_from_std_read::<u64, _, _>(reader, bincode::config::standard())
+                .map_err(|e| ParcodeError::Serialization(e.to_string()))?;
+
+        let mut vec = Vec::with_capacity(len as usize);
+        for _ in 0..len {
+            vec.push(Self::read_from_shard(reader, children)?);
+        }
+        Ok(vec)
+    }
+}
+
+macro_rules! impl_primitive_parcode_item {
+    ($($t:ty),*) => {
+        $(
+            impl ParcodeItem for $t {
+                fn read_from_shard(
+                    reader: &mut std::io::Cursor<&[u8]>,
+                    _children: &mut std::vec::IntoIter<ChunkNode<'_>>,
+                ) -> Result<Self> {
+                    bincode::serde::decode_from_std_read(reader, bincode::config::standard())
+                        .map_err(|e| ParcodeError::Serialization(e.to_string()))
+                }
+
+                // Optimize slice reading for primitives (bulk read)
+                fn read_slice_from_shard(
+                    reader: &mut std::io::Cursor<&[u8]>,
+                    _children: &mut std::vec::IntoIter<ChunkNode<'_>>,
+                ) -> Result<Vec<Self>> {
+                     bincode::serde::decode_from_std_read(reader, bincode::config::standard())
+                        .map_err(|e| ParcodeError::Serialization(e.to_string()))
+                }
+            }
+        )*
+    }
+}
+
+impl_primitive_parcode_item!(
+    u8, u16, u32, u64, u128, i8, i16, i32, i64, i128, f32, f64, bool, String
+);
+
 /// Optimized implementation for Vectors: Uses Parallel Stitching.
 impl<T> ParcodeNative for Vec<T>
 where
-    T: DeserializeOwned + Send + Sync,
+    T: ParcodeItem,
 {
     fn from_node(node: &ChunkNode<'_>) -> Result<Self> {
         node.decode_parallel_collection()
+    }
+}
+
+impl<K, V> ParcodeNative for HashMap<K, V>
+where
+    K: DeserializeOwned + Eq + Hash + Send + Sync,
+    V: DeserializeOwned + Send + Sync,
+{
+    fn from_node(node: &ChunkNode<'_>) -> Result<Self> {
+        // Usar la lógica de ParcodeMapPromise::load() o similar
+        // Dado que ParcodeMapPromise está en 'rt', y 'rt' usa 'reader',
+        // podemos implementar la lógica aquí o usar rt si no hay ciclo.
+        // Mejor implementar la lógica de "Load All Shards" aquí.
+
+        // 1. Leer contenedor (num shards)
+        let container_payload = node.read_raw()?;
+        if container_payload.len() < 4 {
+            return Ok(HashMap::new());
+        }
+
+        // Si el payload es grande, quizás no es un mapa sharded, sino un blob bincode directo.
+        // ParcodeVisitor para Map tiene dos modos: Optimizado (Sharded) y Estándar (Blob).
+        // Si es Blob, node.child_count == 0.
+
+        if node.child_count == 0 {
+            return node.decode(); // Fallback a Bincode normal
+        }
+
+        // Si tiene hijos, es Sharded Map.
+        // Reutilizamos la lógica de iterar shards.
+        let shards = node.children()?;
+        let mut map = HashMap::new();
+
+        for shard in shards {
+            let payload = shard.read_raw()?;
+            if payload.len() < 8 {
+                continue;
+            }
+
+            let count = u32::from_le_bytes(payload[0..4].try_into().unwrap()) as usize;
+            let offsets_start = 8 + (count * 8);
+            let data_start = offsets_start + (count * 4);
+            let offsets_bytes = &payload[offsets_start..data_start];
+
+            for i in 0..count {
+                let off_bytes = &offsets_bytes[i * 4..(i + 1) * 4];
+                let offset = u32::from_le_bytes(off_bytes.try_into().unwrap()) as usize;
+                let data_slice = &payload[data_start + offset..];
+                let (k, v) =
+                    bincode::serde::decode_from_slice(data_slice, bincode::config::standard())
+                        .map_err(|e| ParcodeError::Serialization(e.to_string()))?
+                        .0;
+                map.insert(k, v);
+            }
+        }
+        Ok(map)
     }
 }
 
@@ -340,13 +453,16 @@ impl<'a> ChunkNode<'a> {
     ///   share it across thread boundaries (`Send + Sync + Copy`).
     pub fn decode_parallel_collection<T>(&self) -> Result<Vec<T>>
     where
-        T: DeserializeOwned + Send + Sync,
+        T: ParcodeItem,
     {
         let payload = self.read_raw()?;
 
         // Fallback path for small vectors or leaves:
         if payload.len() < 8 {
-            return self.decode::<Vec<T>>();
+            let mut cursor = std::io::Cursor::new(payload.as_ref());
+            let children = self.children()?;
+            let mut child_iter = children.into_iter();
+            return T::read_slice_from_shard(&mut cursor, &mut child_iter);
         }
 
         // 1. Parse metadata from header
@@ -412,7 +528,12 @@ impl<'a> ChunkNode<'a> {
             .try_for_each(move |(shard_idx, start_idx)| -> Result<()> {
                 let shard_node = self.get_child_by_index(shard_idx)?;
                 // Deserialize shard into a thread-local vector
-                let items: Vec<T> = shard_node.decode()?;
+                let payload = shard_node.read_raw()?;
+                let mut cursor = std::io::Cursor::new(payload.as_ref());
+                let children = shard_node.children()?;
+                let mut child_iter = children.into_iter();
+
+                let items: Vec<T> = T::read_slice_from_shard(&mut cursor, &mut child_iter)?;
                 let count = items.len();
 
                 if start_idx + count > total_items {
@@ -472,7 +593,7 @@ impl<'a> ChunkNode<'a> {
     ///
     /// This calculates which shard holds the item, loads ONLY that shard,
     /// and returns the specific item.
-    pub fn get<T: DeserializeOwned>(&self, index: usize) -> Result<T> {
+    pub fn get<T: ParcodeItem>(&self, index: usize) -> Result<T> {
         let payload = self.read_raw()?;
         if payload.len() < 8 {
             return Err(ParcodeError::Format("Not a valid container".into()));
@@ -487,7 +608,14 @@ impl<'a> ChunkNode<'a> {
         let (target_shard_idx, index_in_shard) = self.resolve_rle_index(index, &shard_runs)?;
 
         let shard_node = self.get_child_by_index(target_shard_idx)?;
-        let shard_data: Vec<T> = shard_node.decode()?;
+
+        // New logic:
+        let payload = shard_node.read_raw()?;
+        let mut cursor = std::io::Cursor::new(payload.as_ref());
+        let children = shard_node.children()?;
+        let mut child_iter = children.into_iter();
+
+        let shard_data: Vec<T> = T::read_slice_from_shard(&mut cursor, &mut child_iter)?;
 
         shard_data
             .into_iter()
@@ -497,7 +625,7 @@ impl<'a> ChunkNode<'a> {
 
     /// Creates a streaming iterator over the collection.
     /// Memory usage is constant (size of one shard) regardless of total size.
-    pub fn iter<T: DeserializeOwned>(self) -> Result<ChunkIterator<'a, T>> {
+    pub fn iter<T: ParcodeItem>(self) -> Result<ChunkIterator<'a, T>> {
         let payload = self.read_raw()?;
         if payload.is_empty() && self.child_count == 0 {
             return Ok(ChunkIterator::empty(self));
@@ -534,7 +662,7 @@ impl<'a> ChunkNode<'a> {
     // --- INTERNAL HELPERS ---
 
     /// Retrieves a child `ChunkNode` by its index in the footer.
-    fn get_child_by_index(&self, index: usize) -> Result<Self> {
+    pub fn get_child_by_index(&self, index: usize) -> Result<Self> {
         if index >= self.child_count as usize {
             return Err(ParcodeError::Format("Child index out of bounds".into()));
         }
@@ -607,7 +735,7 @@ impl<'a, T> ChunkIterator<'a, T> {
     }
 }
 
-impl<'a, T: DeserializeOwned> Iterator for ChunkIterator<'a, T> {
+impl<'a, T: ParcodeItem> Iterator for ChunkIterator<'a, T> {
     type Item = Result<T>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -632,7 +760,14 @@ impl<'a, T: DeserializeOwned> Iterator for ChunkIterator<'a, T> {
         let next_shard_res = self
             .container
             .get_child_by_index(self.current_shard_idx)
-            .and_then(|node| node.decode::<Vec<T>>());
+            .and_then(|node| {
+                // New logic:
+                let payload = node.read_raw()?;
+                let mut cursor = std::io::Cursor::new(payload.as_ref());
+                let children = node.children()?;
+                let mut child_iter = children.into_iter();
+                T::read_slice_from_shard(&mut cursor, &mut child_iter)
+            });
 
         match next_shard_res {
             Ok(items) => {

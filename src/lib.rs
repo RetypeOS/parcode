@@ -29,6 +29,8 @@ pub mod executor;
 pub mod format;
 pub mod graph;
 pub mod io;
+/// Map optimization strategies.
+pub mod map;
 pub mod reader;
 pub mod visitor;
 

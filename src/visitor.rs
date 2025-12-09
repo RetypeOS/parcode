@@ -30,8 +30,55 @@ pub trait ParcodeVisitor {
         &'a self,
         config_override: Option<JobConfig>,
     ) -> Box<dyn SerializationJob<'a> + 'a>;
-}
 
-// Example implementation for primitives (leaves in the graph logic,
-// usually inlined, but here shown if they were chunks).
-// In reality, primitives are almost always part of a parent chunk payload.
+    /// Serializes the object "shallowly" (only local fields, ignoring chunkable/map fields).
+    /// This is used when the object is part of a container (like Vec) that forms a chunk.
+    fn serialize_shallow<W: std::io::Write>(&self, writer: &mut W) -> crate::error::Result<()>
+    where
+        Self: serde::Serialize,
+    {
+        // Default: serialize everything
+        crate::internal::bincode::serde::encode_into_std_write(
+            self,
+            writer,
+            crate::internal::bincode::config::standard(),
+        )
+        .map_err(|e| crate::error::ParcodeError::Serialization(e.to_string()))
+        .map(|_| ())
+    }
+
+    /// Serializes a slice of objects.
+    /// Default implementation uses bincode for the whole slice (optimized).
+    /// Types with chunkable fields should override this to iterate and call serialize_shallow.
+    fn serialize_slice<W: std::io::Write>(
+        slice: &[Self],
+        writer: &mut W,
+    ) -> crate::error::Result<()>
+    where
+        Self: Sized + serde::Serialize,
+    {
+        crate::internal::bincode::serde::encode_into_std_write(
+            slice,
+            writer,
+            crate::internal::bincode::config::standard(),
+        )
+        .map_err(|e| crate::error::ParcodeError::Serialization(e.to_string()))
+        .map(|_| ())
+    }
+
+    /// Visits the object as an "inlined" item within a container (e.g., `Vec`).
+    ///
+    /// In this mode, the object does NOT create a new node for itself, as its
+    /// "local" data is already serialized in the container's payload.
+    /// However, it must still visit its "remote" (chunkable) children and link
+    /// them to the container's node (`parent_id`).
+    fn visit_inlined<'a>(
+        &'a self,
+        _graph: &mut TaskGraph<'a>,
+        _parent_id: ChunkId,
+        _config_override: Option<JobConfig>,
+    ) {
+        // Default: Do nothing (no children to visit or link).
+        // Override this for structs with #[parcode(chunkable)] fields.
+    }
+}

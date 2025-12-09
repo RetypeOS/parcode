@@ -12,8 +12,12 @@
 use crate::error::{ParcodeError, Result};
 use crate::format::ChildRef;
 use crate::graph::{ChunkId, JobConfig, SerializationJob, TaskGraph};
+use crate::map::{MapShardJob, hash_key};
 use crate::visitor::ParcodeVisitor;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::hash::Hash;
 
 // --- TUNING CONSTANTS ---
 
@@ -70,16 +74,33 @@ struct VecShardJob<'a, T> {
 
 impl<'a, T> SerializationJob<'a> for VecShardJob<'a, T>
 where
-    T: Serialize + Send + Sync + 'static,
+    T: ParcodeVisitor + Serialize + Send + Sync + 'static,
 {
     fn execute(&self, _children_refs: &[ChildRef]) -> Result<Vec<u8>> {
-        // Serialize the SLICE directly. No cloning occurred during graph build.
-        bincode::serde::encode_to_vec(self.data, bincode::config::standard())
-            .map_err(|e| ParcodeError::Serialization(e.to_string()))
+        let mut buffer = Vec::<u8>::new();
+        T::serialize_slice(self.data, &mut buffer)?;
+        Ok(buffer)
     }
 
     fn estimated_size(&self) -> usize {
         std::mem::size_of_val(self.data)
+    }
+}
+
+impl<'a, T> SerializationJob<'a> for &T
+where
+    T: SerializationJob<'a> + ?Sized,
+{
+    fn execute(&self, children_refs: &[ChildRef]) -> Result<Vec<u8>> {
+        (**self).execute(children_refs)
+    }
+
+    fn estimated_size(&self) -> usize {
+        (**self).estimated_size()
+    }
+
+    fn config(&self) -> JobConfig {
+        (**self).config()
     }
 }
 
@@ -225,7 +246,7 @@ where
             // If T is a complex struct, its own configuration (via Macro) will dictate how it behaves.
             for item in chunk_slice {
                 // Recursion propagates the graph reference
-                item.visit(graph, Some(shard_id), None);
+                item.visit_inlined(graph, shard_id, None);
             }
         }
     }
@@ -262,6 +283,142 @@ where
     }
     fn estimated_size(&self) -> usize {
         std::mem::size_of::<T>()
+    }
+}
+
+// --- SOPORTE PARA HASHMAP ---
+
+/// El trabajo que serializa el contenedor de un Mapa.
+/// Su único payload es el número de shards (u32), necesario para que el lector
+/// calcule el módulo del hash correctamente.
+#[derive(Clone)]
+struct MapContainerJob {
+    num_shards: u32,
+}
+
+impl<'a> SerializationJob<'a> for MapContainerJob {
+    fn execute(&self, _children_refs: &[ChildRef]) -> Result<Vec<u8>> {
+        // Escribimos simplemente el número de shards en Little Endian.
+        Ok(self.num_shards.to_le_bytes().to_vec())
+    }
+
+    fn estimated_size(&self) -> usize {
+        4
+    }
+}
+
+impl<K, V> ParcodeVisitor for HashMap<K, V>
+where
+    K: Serialize + DeserializeOwned + Hash + Eq + Send + Sync + Clone + 'static,
+    V: Serialize + DeserializeOwned + Send + Sync + Clone + 'static,
+{
+    fn visit<'a>(
+        &'a self,
+        graph: &mut TaskGraph<'a>,
+        parent_id: Option<ChunkId>,
+        config_override: Option<JobConfig>,
+    ) {
+        // Detectamos si se solicitó la optimización de mapa
+        let is_map_optimized = config_override.map(|c| c.is_map).unwrap_or(false);
+        let total_items = self.len();
+
+        if !is_map_optimized || total_items < 200 {
+            // Estrategia Estándar: Blob único.
+            // Si parent_id es None, somos raíz -> Crear nodo.
+            // Si parent_id es Some, somos un hijo chunkable -> Crear nodo y enlazar.
+            // (La macro solo llama a visit con Some si el campo es chunkable).
+
+            let job = if total_items != 0 {
+                self.create_job(config_override)
+            } else {
+                Box::new(MapContainerJob { num_shards: 0 })
+            };
+            let my_id = graph.add_node(job);
+
+            if let Some(p) = parent_id {
+                graph.link_parent_child(p, my_id);
+            }
+            return;
+        }
+
+        //// Estrategia Optimizada (Bucketing + Micro-Index)
+        //if total_items == 0 {
+        //    // Mapa vacío -> Contenedor con 0 shards
+        //    let container = Box::new(MapContainerJob { num_shards: 0 });
+        //    let id = graph.add_node(container);
+        //    if let Some(p) = parent_id {
+        //        graph.link_parent_child(p, id);
+        //    }
+        //    return;
+        //}
+
+        // Heurística de Sharding:
+        // Buscamos que cada shard tenga un tamaño razonable para búsqueda lineal rápida.
+        // 500-1000 items por bucket suele ser un buen balance para evitar colisiones
+        // y mantener el micro-índice en caché L1/L2.
+        // Limitamos a 256 shards por defecto para no explotar el grafo en mapas gigantes
+        // (aunque el formato soporta más).
+        let target_items_per_bucket = 2000;
+        let num_shards = (total_items / target_items_per_bucket).max(1).min(1024);
+
+        // Fase 1: Distribución (Bucketing)
+        // Recolectamos referencias (&K, &V) para no clonar la memoria.
+        let mut buckets = vec![Vec::new(); num_shards];
+
+        for (k, v) in self {
+            let h = hash_key(k);
+            let idx = (h as usize) % num_shards;
+            buckets[idx].push((k, v));
+        }
+
+        // Fase 2: Creación de Nodos
+        // Nodo Contenedor
+        let container_inner = Box::new(MapContainerJob {
+            num_shards: num_shards as u32,
+        });
+        // Si hay compresión global, la aplicamos al contenedor (aunque es pequeño).
+        let container_job: Box<dyn SerializationJob<'a> + 'a> = if let Some(cfg) = config_override {
+            Box::new(crate::rt::ConfiguredJob::new(container_inner, cfg))
+        } else {
+            container_inner
+        };
+
+        let my_id = graph.add_node(container_job);
+        if let Some(p) = parent_id {
+            graph.link_parent_child(p, my_id);
+        }
+
+        // Nodos Shard
+        for bucket in buckets {
+            if bucket.is_empty() {
+                continue;
+            } // Optimizacion: No crear shards vacíos
+
+            let shard_inner = Box::new(MapShardJob { items: bucket });
+
+            // Aplicamos la misma configuración (compresión) a los shards
+            let shard_job: Box<dyn SerializationJob<'a> + 'a> = if let Some(cfg) = config_override {
+                Box::new(crate::rt::ConfiguredJob::new(shard_inner, cfg))
+            } else {
+                shard_inner
+            };
+
+            let child_id = graph.add_node(shard_job);
+            graph.link_parent_child(my_id, child_id);
+        }
+    }
+
+    fn create_job<'a>(
+        &'a self,
+        config_override: Option<JobConfig>,
+    ) -> Box<dyn SerializationJob<'a> + 'a> {
+        // Fallback para cuando se usa como primitivo (sin estrategia de mapa)
+        let base_job = Box::new(PrimitiveJob(self.clone()));
+        if let Some(cfg) = config_override {
+            Box::new(crate::rt::ConfiguredJob::new(base_job, cfg))
+        } else {
+            base_job
+        }
     }
 }
 

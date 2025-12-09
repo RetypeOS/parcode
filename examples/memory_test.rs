@@ -6,10 +6,8 @@
 #![allow(unsafe_code)]
 
 use parcode::{
-    Parcode, ParcodeError, ParcodeReader, Result,
-    format::ChildRef,
+    Parcode, ParcodeReader,
     graph::{ChunkId, JobConfig, SerializationJob, TaskGraph},
-    reader::{ChunkNode, ParcodeNative},
     visitor::ParcodeVisitor,
 };
 use serde::{Deserialize, Serialize};
@@ -86,7 +84,7 @@ static ALLOCATOR: ProfilingAllocator<System> = ProfilingAllocator::new(System);
 // 2. DATA STRUCTURES
 // ============================================================================
 
-#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, parcode::ParcodeObject)]
 struct ComplexItem {
     id: u64,
     name: String,
@@ -94,54 +92,6 @@ struct ComplexItem {
     #[serde(with = "serde_bytes")]
     payload: Vec<u8>,
     tags: HashMap<String, String>,
-}
-
-// --- MANUAL IMPL (Simulating what the Macro will generate) ---
-
-impl ParcodeVisitor for ComplexItem {
-    fn visit<'a>(
-        &'a self,
-        graph: &mut TaskGraph<'a>,
-        parent_id: Option<ChunkId>,
-        config_override: Option<JobConfig>,
-    ) {
-        // Logic: If root or inside a collection, create a node.
-        // This simulates a "Heavy Leaf" that doesn't split further.
-        if parent_id.is_none() {
-            let job = self.create_job(config_override);
-            graph.add_node(job);
-        }
-    }
-
-    fn create_job<'a>(
-        &'a self,
-        config_override: Option<JobConfig>,
-    ) -> Box<dyn SerializationJob<'a> + 'a> {
-        let base = Box::new(self.clone());
-        // Apply config override (e.g. Compression) if provided by parent/macro
-        if let Some(cfg) = config_override {
-            Box::new(parcode::rt::ConfiguredJob::new(base, cfg))
-        } else {
-            base
-        }
-    }
-}
-
-impl SerializationJob<'_> for ComplexItem {
-    fn execute(&self, _: &[ChildRef]) -> Result<Vec<u8>> {
-        // Low-level serialization using Bincode
-        bincode::serde::encode_to_vec(self, bincode::config::standard())
-            .map_err(|e| ParcodeError::Serialization(e.to_string()))
-    }
-    fn estimated_size(&self) -> usize {
-        self.payload.len() + 200
-    }
-}
-
-impl ParcodeNative for ComplexItem {
-    fn from_node(node: &ChunkNode<'_>) -> Result<Self> {
-        node.decode::<Self>()
-    }
 }
 
 // --- CONFIGURATION WRAPPER ---
@@ -158,7 +108,10 @@ impl<T: ParcodeVisitor> ParcodeVisitor for Lz4Compressed<T> {
         _config_override: Option<JobConfig>,
     ) {
         // FORCE LZ4 Config (ID 1)
-        let lz4_config = JobConfig { compression_id: 1 };
+        let lz4_config = JobConfig {
+            compression_id: 1,
+            is_map: false,
+        };
 
         // Delegate to inner
         self.0.visit(graph, parent_id, Some(lz4_config));

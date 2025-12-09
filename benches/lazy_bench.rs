@@ -1,4 +1,5 @@
 //! benches/lazy_bench.rs
+#![allow(missing_docs)]
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use parcode::{Parcode, ParcodeObject, ParcodeReader};
@@ -8,15 +9,19 @@ use tempfile::NamedTempFile;
 
 #[derive(Serialize, Deserialize, Clone, ParcodeObject)]
 struct HeavyNode {
+    /// Metadata field
     meta: u64,
+    /// Heavy payload
     #[parcode(chunkable)]
     payload: Vec<u8>,
 }
 
 #[derive(Serialize, Deserialize, Clone, ParcodeObject)]
 struct Root {
+    /// First child
     #[parcode(chunkable)]
     child_a: HeavyNode,
+    /// Second child
     #[parcode(chunkable)]
     child_b: HeavyNode,
 }

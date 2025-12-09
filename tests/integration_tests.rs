@@ -1,11 +1,12 @@
 // ===== tests\integration_tests.rs =====
 //! Suite de pruebas de integración para Parcode.
 
+#![allow(missing_docs)]
+
 use parcode::{
-    Parcode, ParcodeError, ParcodeReader, Result,
+    Parcode, ParcodeError, ParcodeObject, ParcodeReader, Result,
     format::ChildRef,
     graph::{ChunkId, JobConfig, SerializationJob, TaskGraph},
-    reader::{ChunkNode, ParcodeNative},
     visitor::ParcodeVisitor,
 };
 use serde::{Deserialize, Serialize};
@@ -15,57 +16,11 @@ use tempfile::NamedTempFile;
 
 // --- INFRAESTRUCTURA DE PRUEBA (Mocks y Structs) ---
 
-#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, ParcodeObject)]
 struct TestUser {
     id: u64,
     username: String,
     active: bool,
-}
-
-// Implementación manual de ParcodeVisitor (lo que haría la macro)
-impl ParcodeVisitor for TestUser {
-    fn visit<'a>(
-        &'a self,
-        graph: &mut TaskGraph<'a>,
-        parent_id: Option<ChunkId>,
-        config_override: Option<JobConfig>,
-    ) {
-        // 1. Crear trabajo
-        let job = self.create_job(config_override);
-        let my_id = graph.add_node(job);
-        // 2. Ligar al padre
-        if let Some(pid) = parent_id {
-            graph.link_parent_child(pid, my_id);
-        }
-    }
-    fn create_job<'a>(
-        &'a self,
-        config_override: Option<JobConfig>,
-    ) -> Box<dyn SerializationJob<'a> + 'a> {
-        let base = Box::new(self.clone());
-        if let Some(cfg) = config_override {
-            Box::new(parcode::rt::ConfiguredJob::new(base, cfg))
-        } else {
-            base
-        }
-    }
-}
-
-// Implementación manual de SerializationJob
-impl SerializationJob<'_> for TestUser {
-    fn execute(&self, _children: &[ChildRef]) -> Result<Vec<u8>> {
-        bincode::serde::encode_to_vec(self, bincode::config::standard())
-            .map_err(|e| ParcodeError::Serialization(e.to_string()))
-    }
-    fn estimated_size(&self) -> usize {
-        100
-    }
-}
-
-impl ParcodeNative for TestUser {
-    fn from_node(node: &ChunkNode<'_>) -> Result<Self> {
-        node.decode::<Self>()
-    }
 }
 
 // --- WRAPPER PARA VECTORES PERSONALIZADOS ---
