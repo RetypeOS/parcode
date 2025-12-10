@@ -14,12 +14,6 @@ pub struct JobConfig {
     pub is_map: bool,
 }
 
-//impl Default for JobConfig {
-//    fn default() -> Self {
-//        Self { compression_id: 0 }
-//    }
-//}
-
 /// Represents a unit of work: a piece of data that knows how to serialize itself.
 ///
 /// # Lifetimes

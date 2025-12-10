@@ -120,6 +120,11 @@ impl<'a, T: ParcodeItem + Send + Sync + 'a> ParcodeCollectionPromise<'a, T> {
     }
 }
 
+/// A promise for a HashMap that supports lazy loading and efficient lookups.
+///
+/// This type wraps a `ChunkNode` representing a HashMap and provides methods to:
+/// - Load the entire map into memory
+/// - Perform O(1) lookups by key without loading the entire map
 #[derive(Debug)]
 pub struct ParcodeMapPromise<'a, K, V> {
     node: ChunkNode<'a>,
@@ -131,7 +136,7 @@ where
     K: Hash + Eq + DeserializeOwned,
     V: DeserializeOwned,
 {
-    /// Constructor interno.
+    /// Internal constructor.
     pub fn new(node: ChunkNode<'a>) -> Self {
         Self {
             node,
@@ -139,9 +144,14 @@ where
         }
     }
 
-    /// Loads full map by iterating all shards.
+    /// Loads the full map by iterating all shards.
+    ///
+    /// This reconstructs the entire HashMap in memory by:
+    /// 1. Reading the number of shards from the container
+    /// 2. Iterating over each shard and deserializing its entries
+    /// 3. Merging all entries into a single HashMap
     pub fn load(&self) -> Result<HashMap<K, V>> {
-        // 1. Leer número de shards del contenedor
+        // 1. Read number of shards from container
         let container_payload = self.node.read_raw()?;
         let num_shards = if container_payload.len() >= 4 {
             u32::from_le_bytes(container_payload[0..4].try_into().unwrap())
@@ -154,8 +164,8 @@ where
             return Ok(map);
         }
 
-        // 2. Iterar Shards
-        // Usamos children() que devuelve Vec<ChunkNode>
+        // 2. Iterate over shards
+        // Use children() which returns Vec<ChunkNode>
         let shards = self.node.children()?;
         for shard in shards {
             let payload = shard.read_raw()?;
@@ -163,14 +173,14 @@ where
                 continue;
             }
 
-            // Parsear header SOA
+            // Parse SOA header
             let count = u32::from_le_bytes(payload[0..4].try_into().unwrap()) as usize;
 
             // Layout: Count(4) + Padding(4) + Hashes(8*N) + Offsets(4*N) + Data
             let offsets_start = 8 + (count * 8);
             let data_start = offsets_start + (count * 4);
 
-            // Leer offsets para iterar datos
+            // Read offsets to iterate data
             let offsets_bytes = &payload[offsets_start..data_start];
 
             for i in 0..count {
@@ -178,7 +188,7 @@ where
                 let offset = u32::from_le_bytes(off_bytes.try_into().unwrap()) as usize;
                 let data_slice = &payload[data_start + offset..];
 
-                // Deserializar par (K, V)
+                // Deserialize (K, V) pair
                 let (k, v): (K, V) =
                     bincode::serde::decode_from_slice(data_slice, bincode::config::standard())
                         .map_err(|e| crate::ParcodeError::Serialization(e.to_string()))?
@@ -190,12 +200,25 @@ where
         Ok(map)
     }
 
+    /// Performs a fast lookup for a single key without loading the entire map.
+    ///
+    /// This method:
+    /// 1. Computes the hash of the key
+    /// 2. Determines which shard contains the key (via modulo)
+    /// 3. Loads only that shard
+    /// 4. Scans the shard's hash array for matches
+    /// 5. Verifies the key on hash collision and returns the value
+    ///
+    /// # Performance
+    /// - O(1) shard selection
+    /// - O(N/S) linear scan within shard (where S = number of shards)
+    /// - SIMD-optimized hash comparison on supported platforms
     pub fn get(&self, key: &K) -> Result<Option<V>> {
-        // 1. Leer Container Payload (Num Shards)
+        // 1. Read Container Payload (Num Shards)
         let container_payload = self.node.read_raw()?;
         if container_payload.len() < 4 {
             return Ok(None);
-        } // Vacío
+        } // Empty
         let num_shards = u32::from_le_bytes(container_payload[0..4].try_into().unwrap());
 
         // 2. Hash & Select Shard
@@ -225,14 +248,14 @@ where
             let h = u64::from_le_bytes(chunk.try_into().unwrap());
 
             if h == target_hash {
-                // Candidato. Verificar.
+                // Candidate found. Verify key to handle hash collisions.
                 let offset_bytes = &payload[offsets_start + (i * 4)..];
                 let offset = u32::from_le_bytes(offset_bytes[0..4].try_into().unwrap()) as usize;
 
                 let data_slice = &payload[data_start + offset..];
 
-                // Deserializar (K, V)
-                // Usamos bincode::deserialize_from slice. Bincode sabe cuándo parar.
+                // Deserialize (K, V)
+                // Use bincode::deserialize_from slice. Bincode knows when to stop.
                 let (stored_key, stored_val): (K, V) =
                     bincode::serde::decode_from_slice(data_slice, bincode::config::standard())
                         .map_err(|e| crate::ParcodeError::Serialization(e.to_string()))?
@@ -241,7 +264,7 @@ where
                 if &stored_key == key {
                     return Ok(Some(stored_val));
                 }
-                // Si no coincide, es una colisión de hash (raro). Seguimos buscando.
+                // If no match, it's a hash collision (rare). Continue searching.
             }
         }
 

@@ -1,5 +1,5 @@
 // ===== tests\integration_tests.rs =====
-//! Suite de pruebas de integración para Parcode.
+//! Integration test suite for Parcode.
 
 #![allow(missing_docs)]
 
@@ -14,7 +14,7 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use tempfile::NamedTempFile;
 
-// --- INFRAESTRUCTURA DE PRUEBA (Mocks y Structs) ---
+// --- TEST INFRASTRUCTURE ---
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, ParcodeObject)]
 struct TestUser {
@@ -22,8 +22,6 @@ struct TestUser {
     username: String,
     active: bool,
 }
-
-// --- WRAPPER PARA VECTORES PERSONALIZADOS ---
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 struct UserDirectory {
@@ -38,7 +36,7 @@ impl ParcodeVisitor for UserDirectory {
         parent_id: Option<ChunkId>,
         config_override: Option<JobConfig>,
     ) {
-        // 1. Nodo contenedor para 'region'
+        // 1. Container node for 'region'
         #[derive(Serialize)]
         struct Header {
             region: String,
@@ -59,7 +57,7 @@ impl ParcodeVisitor for UserDirectory {
         }
 
         let header_job_base = Box::new(HeaderJob(header));
-        // Aplicamos config si existe
+        // Apply config if it exists
         let header_job: Box<dyn SerializationJob<'_>> = if let Some(cfg) = config_override {
             Box::new(parcode::rt::ConfiguredJob::new(header_job_base, cfg))
         } else {
@@ -71,9 +69,9 @@ impl ParcodeVisitor for UserDirectory {
             graph.link_parent_child(pid, my_id);
         }
 
-        // 2. DELEGAR AL VEC
-        // Aquí propagamos None, pero podríamos propagar config_override si quisiéramos que la config
-        // del padre afectara a los hijos users.
+        // 2. DELEGATE TO VEC
+        // Here we propagate None, but we could propagate config_override if we wanted the parent's
+        // config to affect the child users.
         self.users.visit(graph, Some(my_id), None);
     }
 
@@ -100,7 +98,7 @@ struct GameZone {
     data: Vec<u8>,
 }
 
-// --- IMPLEMENTACIONES JUEGO ---
+// --- GAME IMPLEMENTATIONS ---
 
 impl ParcodeVisitor for GameLevel {
     fn visit<'a>(
@@ -259,7 +257,7 @@ fn test_massive_vector_sharding() -> Result<()> {
     println!("Shards created: {}", shards.len());
     assert!(
         shards.len() > 1,
-        "El sistema debería haber fragmentado el vector"
+        "The system should have fragmented the vector"
     );
 
     Ok(())
@@ -357,7 +355,7 @@ fn test_corruption_and_errors() -> Result<()> {
     if let Err(ParcodeError::Format(msg)) = res {
         assert!(msg.contains("Magic"));
     } else {
-        assert!(false, "No detectó magic bytes inválidos");
+        assert!(false, "Did not detect invalid magic bytes");
     }
 
     let user = TestUser {

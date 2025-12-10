@@ -1,7 +1,6 @@
-// examples/lazy_loading.rs
-
-//! Demuestra el acceso perezoso y granular a estructuras complejas.
+//! Demonstrates lazy and granular access to complex structures.
 //! Run: cargo run --example lazy_loading
+
 #![allow(missing_docs)]
 
 use parcode::{Parcode, ParcodeObject, ParcodeReader};
@@ -32,11 +31,9 @@ struct GameWorld {
     #[parcode(chunkable)]
     terrain: BigAsset,
 }
-
 fn main() -> parcode::Result<()> {
     println!("--- Parcode Lazy Loading Example ---");
-
-    // 1. Generar Datos
+    // 1. Generate Data
     let asset_size = 50 * 1024 * 1024; // 50MB
     println!(
         "Generating world with two {} MB assets...",
@@ -57,27 +54,28 @@ fn main() -> parcode::Result<()> {
 
     let file = NamedTempFile::new().expect("Failed to create temp file");
 
-    println!("Saving world...");
+    println!("Saving world with Parcode...");
     let start = Instant::now();
     Parcode::save(file.path(), &world)?;
     println!("Saved in {:.2?}", start.elapsed());
 
-    // 2. Lectura Lazy
+    // 2. Lazy Reading
     println!("\n--- Lazy Access ---");
     let reader = ParcodeReader::open(file.path())?;
 
     let start_lazy = Instant::now();
     let lazy_world = reader.read_lazy::<GameWorld>()?;
     println!("Lazy Metadata Loaded in {:.2?}", start_lazy.elapsed());
-
-    // Acceso a metadatos locales (Instantáneo)
+    let printed_lazy = Instant::now();
+    // Access to local metadata (Instant)
     println!("World Name: {}", lazy_world.world_name);
 
-    // Navegación profunda (Instantáneo, solo lee headers)
+    // Deep navigation (Instant, only reads headers)
     println!("Skybox ID: {}", lazy_world.skybox.id);
     println!("Terrain ID: {}", lazy_world.terrain.id);
+    println!("Lazy Metadata Printed in {:.2?}", printed_lazy.elapsed());
 
-    // Carga selectiva
+    // Selective loading
     println!("Loading ONLY Skybox data...");
     let load_start = Instant::now();
     let sky_data = lazy_world.skybox.data.load()?;
@@ -88,6 +86,7 @@ fn main() -> parcode::Result<()> {
     );
 
     println!("Done. Notice we never loaded Terrain data!");
+    println!("Time elapsed with Parcode: {:.2?}", start_lazy.elapsed());
 
     Ok(())
 }
