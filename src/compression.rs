@@ -103,25 +103,24 @@ impl Compressor for Lz4Compressor {
         // It stores uncompressed size as u32 LE? No, it might be varint or just u32.
         // Checking lz4_flex docs (recalled): it uses u32 little endian.
 
-        let uncompressed_len = data.len() as u32;
+        let uncompressed_len = u32::try_from(data.len())
+            .map_err(|_| ParcodeError::Compression("Data too large for u32".to_string()))?;
         output.extend_from_slice(&uncompressed_len.to_le_bytes());
 
         let _start_idx = output.len();
         let max_size = lz4_flex::block::get_maximum_output_size(data.len());
         output.reserve(max_size);
 
-        // We need to write into the uninitialized part of the vector.
-        // Safe way: resize with 0, then compress_into, then truncate?
-        // Or use unsafe set_len.
-
-        // Let's use a temporary buffer approach if we want to be 100% safe without unsafe code,
-        // BUT that defeats the purpose.
-        // lz4_flex::compress_into writes to a slice.
-
         let current_len = output.len();
         output.resize(current_len + max_size, 0);
 
-        match lz4_flex::block::compress_into(data, &mut output[current_len..]) {
+        let output_slice = output.get_mut(current_len..).ok_or_else(|| {
+            ParcodeError::Compression("Output buffer resizing failed".to_string())
+        })?;
+
+        let result = lz4_flex::block::compress_into(data, output_slice);
+
+        match result {
             Ok(bytes_written) => {
                 output.truncate(current_len + bytes_written);
                 Ok(())

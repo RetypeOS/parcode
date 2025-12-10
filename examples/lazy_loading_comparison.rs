@@ -1,5 +1,5 @@
 //! Comparison of Parcode, Bincode and Sled measuring access
-//! Run: cargo run --example lazy_loading_comparison
+//! Run: cargo run --example `lazy_loading_comparison`
 
 #![allow(missing_docs)]
 

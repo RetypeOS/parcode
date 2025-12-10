@@ -1,4 +1,3 @@
-//! benches/lazy_bench.rs
 #![allow(missing_docs)]
 
 use criterion::{Criterion, criterion_group, criterion_main};
@@ -39,8 +38,8 @@ fn bench_lazy(c: &mut Criterion) {
         },
     };
 
-    let file = NamedTempFile::new().unwrap();
-    Parcode::save(file.path(), &data).unwrap();
+    let file = NamedTempFile::new().expect("Failed to create temp file");
+    Parcode::save(file.path(), &data).expect("Failed to save parcode data");
     let path = file.path().to_owned();
 
     let mut group = c.benchmark_group("Lazy Access");
@@ -48,30 +47,30 @@ fn bench_lazy(c: &mut Criterion) {
     // Caso A: Carga Completa (Estándar)
     group.bench_function("full_load", |b| {
         b.iter(|| {
-            let loaded: Root = Parcode::read(&path).unwrap();
+            let loaded: Root = Parcode::read(&path).expect("Failed to read parcode data");
             black_box(loaded.child_a.meta);
-        })
+        });
     });
 
     // Caso B: Carga Lazy (Solo metadatos)
     group.bench_function("lazy_meta_only", |b| {
         b.iter(|| {
-            let reader = ParcodeReader::open(&path).unwrap();
-            let lazy = reader.read_lazy::<Root>().unwrap();
+            let reader = ParcodeReader::open(&path).expect("Failed to open reader");
+            let lazy = reader.read_lazy::<Root>().expect("Failed to read lazy");
             // Accedemos a meta profundo A y B
             let sum = lazy.child_a.meta + lazy.child_b.meta;
             black_box(sum);
-        })
+        });
     });
 
     // Caso C: Carga Parcial (Meta A + Payload A)
     group.bench_function("lazy_partial_load", |b| {
         b.iter(|| {
-            let reader = ParcodeReader::open(&path).unwrap();
-            let lazy = reader.read_lazy::<Root>().unwrap();
-            let payload = lazy.child_a.payload.load().unwrap();
+            let reader = ParcodeReader::open(&path).expect("Failed to open reader");
+            let lazy = reader.read_lazy::<Root>().expect("Failed to read lazy");
+            let payload = lazy.child_a.payload.load().expect("Failed to load payload");
             black_box(payload.len());
-        })
+        });
     });
 
     group.finish();

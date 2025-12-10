@@ -1,4 +1,3 @@
-// examples/comprehensive_audit.rs
 //! Comprehensive Architectural Audit: Parcode V3 vs Bincode.
 //! Complex nested structures, mixed collections, no compression.
 //! Run: cargo run --example audit --release
@@ -138,7 +137,7 @@ fn generate_world() -> WorldState {
                     .map(|z_id| {
                         Zone {
                             id: z_id,
-                            terrain_data: vec![r_id as u8; 20_000], // 20KB per zone * 50 = 1MB per region
+                            terrain_data: vec![u8::try_from(r_id).expect("Overflow"); 20_000], // 20KB per zone * 50 = 1MB per region
                         }
                     })
                     .collect(),
@@ -177,8 +176,8 @@ fn main() -> parcode::Result<()> {
     ALLOCATOR.reset();
     let world_data = generate_world();
 
-    let path_par = NamedTempFile::new().unwrap();
-    let path_bin = NamedTempFile::new().unwrap();
+    let path_par = NamedTempFile::new().expect("Failed to create temp file");
+    let path_bin = NamedTempFile::new().expect("Failed to create temp file");
 
     // ------------------------------------------------------------------------
     // TEST 1: WRITING (Serialization)
@@ -199,7 +198,7 @@ fn main() -> parcode::Result<()> {
     {
         let mut w = BufWriter::new(File::create(path_bin.path())?);
         bincode::serde::encode_into_std_write(&world_data, &mut w, bincode::config::standard())
-            .unwrap();
+            .expect("Bincode serialization failed");
     }
     let t_bin_write = t_start.elapsed();
     let mem_bin_write = ALLOCATOR.peak();
@@ -228,7 +227,8 @@ fn main() -> parcode::Result<()> {
     let file = File::open(path_bin.path())?;
     let mut br = BufReader::new(file);
     let _full_world: WorldState =
-        bincode::serde::decode_from_std_read(&mut br, bincode::config::standard()).unwrap();
+        bincode::serde::decode_from_std_read(&mut br, bincode::config::standard())
+            .expect("Bincode deserialization failed");
     let t_bin_open = t_start.elapsed();
     let mem_bin_open = ALLOCATOR.peak();
 
@@ -277,8 +277,8 @@ fn main() -> parcode::Result<()> {
     // Compared to Bincode (Loaded EVERYTHING), it's still a win.
 
     let region_val = lazy_world.regions.get(5)?; // Loads Region 5 + All its Zones
-    let zone_val = &region_val.zones[20];
-    let byte = zone_val.terrain_data[0];
+    let zone_val = region_val.zones.get(20).expect("Zone not found");
+    let byte = *zone_val.terrain_data.first().expect("Terrain data empty");
 
     let t_par_deep = t_start.elapsed();
     let mem_par_deep = ALLOCATOR.peak();

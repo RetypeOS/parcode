@@ -83,23 +83,23 @@ fn bench_writers(c: &mut Criterion) {
     // 1. Baseline: Bincode (Single Threaded)
     group.bench_function("bincode_serialize", |b| {
         b.iter(|| {
-            let file = NamedTempFile::new().unwrap();
+            let file = NamedTempFile::new().expect("Failed to create temp file");
             let mut writer = BufWriter::new(file);
             bincode::serde::encode_into_std_write(
                 black_box(raw_data),
                 &mut writer,
                 bincode::config::standard(),
             )
-            .unwrap();
-        })
+            .expect("Bincode serialization failed");
+        });
     });
 
     // 2. Parcode (Parallel Graph Engine)
     group.bench_function("parcode_save", |b| {
         b.iter(|| {
-            let file = NamedTempFile::new().unwrap();
-            Parcode::save(file.path(), black_box(&data)).unwrap();
-        })
+            let file = NamedTempFile::new().expect("Failed to create temp file");
+            Parcode::save(file.path(), black_box(&data)).expect("Failed to save parcode data");
+        });
     });
 
     group.finish();
@@ -113,78 +113,83 @@ fn bench_readers(c: &mut Criterion) {
     let data = generate_data(item_count);
 
     // Setup files
-    let bincode_file = NamedTempFile::new().unwrap();
+    let bincode_file = NamedTempFile::new().expect("Failed to create temp file");
     bincode::serde::encode_into_std_write(
         &data.0,
         &mut BufWriter::new(&bincode_file),
         bincode::config::standard(),
     )
-    .unwrap();
+    .expect("Bincode serialization failed");
     let bincode_path = bincode_file.path().to_owned();
 
-    let parcode_file = NamedTempFile::new().unwrap();
-    Parcode::save(parcode_file.path(), &data).unwrap();
+    let parcode_file = NamedTempFile::new().expect("Failed to create temp file");
+    Parcode::save(parcode_file.path(), &data).expect("Failed to save parcode data");
     let parcode_path = parcode_file.path().to_owned();
 
-    let reader = ParcodeReader::open(&parcode_path).unwrap();
-    let root = reader.root().unwrap();
-    println!("Chunks detected: {}", root.children().unwrap().len());
+    let reader = ParcodeReader::open(&parcode_path).expect("Failed to open reader");
+    let root = reader.root().expect("Failed to get root");
+    println!(
+        "Chunks detected: {}",
+        root.children().expect("Failed to get children").len()
+    );
 
     let mut group = c.benchmark_group("Deserialization Read");
 
     // 1. Bincode: Standard
     group.bench_function("bincode_read_all", |b| {
         b.iter(|| {
-            let file = File::open(&bincode_path).unwrap();
+            let file = File::open(&bincode_path).expect("Failed to open file");
             let _res: Vec<BenchItem> = bincode::serde::decode_from_std_read(
                 &mut std::io::BufReader::new(file),
                 bincode::config::standard(),
             )
-            .unwrap();
-        })
+            .expect("Bincode deserialization failed");
+        });
     });
 
     // 2. Parcode: Random Access (Single item)
     group.bench_function("parcode_random_access_10", |b| {
         b.iter(|| {
-            let reader = ParcodeReader::open(&parcode_path).unwrap();
-            let root = reader.root().unwrap();
+            let reader = ParcodeReader::open(&parcode_path).expect("Failed to open reader");
+            let root = reader.root().expect("Failed to get root");
 
             for i in (0..10).map(|x| x * (item_count / 10)) {
-                let _obj: BenchItem = root.get(i).unwrap();
+                let _obj: BenchItem = root.get(i).expect("Failed to get item");
             }
-        })
+        });
     });
 
     // 3. Parcode: Full Scan (Manual Shard Iteration)
     group.bench_function("parcode_full_scan_manual", |b| {
         b.iter(|| {
-            let reader = ParcodeReader::open(&parcode_path).unwrap();
-            let root = reader.root().unwrap();
+            let reader = ParcodeReader::open(&parcode_path).expect("Failed to open reader");
+            let root = reader.root().expect("Failed to get root");
 
             // Get the Shards (direct children)
-            let shards = root.children().unwrap();
+            let shards = root.children().expect("Failed to get children");
 
             for shard_node in shards {
                 // Deserialize the complete Shard (Vec<BenchItem>)
-                let items: Vec<BenchItem> = shard_node.decode().unwrap();
+                let items: Vec<BenchItem> = shard_node.decode().expect("Failed to decode shard");
 
                 // Iterate items in memory (simulating usage)
                 for item in items {
                     black_box(item);
                 }
             }
-        })
+        });
     });
 
     // 4. Parcode: Parallel Stitching (La nueva joya)
     // Añadimos esto para probar la velocidad de reconstrucción total
     group.bench_function("parcode_read_all_parallel", |b| {
         b.iter(|| {
-            let reader = ParcodeReader::open(&parcode_path).unwrap();
-            let root = reader.root().unwrap();
-            let _res: Vec<BenchItem> = root.decode_parallel_collection().unwrap();
-        })
+            let reader = ParcodeReader::open(&parcode_path).expect("Failed to open reader");
+            let root = reader.root().expect("Failed to get root");
+            let _res: Vec<BenchItem> = root
+                .decode_parallel_collection()
+                .expect("Failed to decode parallel");
+        });
     });
 
     group.finish();

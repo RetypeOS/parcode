@@ -1,6 +1,6 @@
 //! Memory Profiling & Performance Example for Parcode V3.
 //!
-//! Run with: cargo run --example `memory_test` --release --features lz4_flex
+//! Run with: cargo run --example `memory_test` --release --features `lz4_flex`
 
 #![allow(missing_docs)]
 #![allow(unsafe_code)]
@@ -118,7 +118,7 @@ impl<T: ParcodeVisitor> ParcodeVisitor for Lz4Compressed<T> {
     }
 
     fn create_job<'a>(&'a self, _config: Option<JobConfig>) -> Box<dyn SerializationJob<'a> + 'a> {
-        panic!("Wrapper should not create job directly in this example usage");
+        unreachable!("Wrapper should not create job directly in this example usage");
     }
 }
 
@@ -136,7 +136,7 @@ fn generate_dataset(count: usize) -> Vec<ComplexItem> {
             ComplexItem {
                 id: i as u64,
                 name: format!("asset_{:08}", i),
-                payload: vec![((i * 3) % 255) as u8; size],
+                payload: vec![u8::try_from((i * 3) % 255).expect("Value in range"); size],
                 tags: (0..3)
                     .map(|j| (format!("meta_{}", j), format!("val_{}", i + j)))
                     .collect(),

@@ -2,6 +2,15 @@
 name = "parcode-derive"
 version = "0.1.0"
 edition = "2024"
+authors = ["RetypeOS"]
+description = "Procedural macros for the Parcode high-performance serialization library."
+repository = "https://github.com/retypeos/parcode"
+readme = "README.md"
+keywords = ["serialization", "derive", "proc-macro", "parcode"]
+categories = ["development-tools::procedural-macro-helpers", "encoding"]
+license = "MIT"
+
+exclude = [".github/*", "tests/*", "examples/*"]
 
 [lib]
 proc-macro = true
@@ -10,3 +19,32 @@ proc-macro = true
 syn = { version = "2.0.110", features = ["full", "extra-traits"] }
 quote = "1.0.42"
 proc-macro2 = "1.0.103"
+
+[lints]
+rust.keyword_idents_2024 = "forbid"
+rust.non_ascii_idents = "forbid"
+rust.unsafe_op_in_unsafe_fn = "forbid"
+
+rust.elided_lifetimes_in_paths = "warn"
+rust.missing_debug_implementations = "warn"
+rust.missing_docs = "warn"
+rust.trivial_numeric_casts = "warn"
+rust.unreachable_pub = "warn"
+rust.unused_import_braces = "warn"
+
+[lints.clippy]
+panic = "deny"
+unwrap_used = "deny"
+cast_possible_truncation = "deny"
+cast_sign_loss = "deny"
+indexing_slicing = "warn"
+cargo_common_metadata = "warn"
+dbg_macro = "warn"
+doc_markdown = "warn"
+semicolon_if_nothing_returned = "warn"
+todo = "warn"
+use_self = "warn"
+unnecessary_wraps = "warn"
+
+pedantic = { level = "allow", priority = -1 }
+nursery = { level = "allow", priority = -1 }

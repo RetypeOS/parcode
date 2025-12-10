@@ -27,22 +27,24 @@ fn bench_map(c: &mut Criterion) {
     }
 
     let data = MapContainer { opt_map: map };
-    let file = NamedTempFile::new().unwrap();
-    Parcode::save(file.path(), &data).unwrap();
+    let file = NamedTempFile::new().expect("Failed to create temp file");
+    Parcode::save(file.path(), &data).expect("Failed to save parcode data");
     let path = file.path().to_owned();
 
     let mut group = c.benchmark_group("Map Random Access");
 
     group.bench_function("optimized_lookup", |b| {
         // Setup reader once per batch to simulate persistent app
-        let reader = ParcodeReader::open(&path).unwrap();
-        let lazy = reader.read_lazy::<MapContainer>().unwrap();
+        let reader = ParcodeReader::open(&path).expect("Failed to open reader");
+        let lazy = reader
+            .read_lazy::<MapContainer>()
+            .expect("Failed to read lazy");
 
         b.iter(|| {
             // Lookup key 50,000 (Middle)
-            let val = lazy.opt_map.get(&50_000).unwrap();
+            let val = lazy.opt_map.get(&50_000).expect("Failed to get value");
             std::hint::black_box(val);
-        })
+        });
     });
 
     group.finish();

@@ -1,6 +1,5 @@
-// examples/map_benchmark.rs
-//! Comprehensive Benchmark: HashMap Optimization vs Standard Serialization.
-//! Run: cargo run --example map_benchmark --release --features lz4_flex
+//! Comprehensive Benchmark: `HashMap` Optimization vs Standard Serialization.
+//! Run: cargo run --example `map_benchmark` --release --features `lz4_flex`
 
 #![allow(missing_docs)]
 #![allow(unsafe_code)]
@@ -103,9 +102,9 @@ fn main() -> parcode::Result<()> {
     let opt_data = OptimizedMap { data: map.clone() };
     let std_data = StandardMap { data: map.clone() };
 
-    let file_opt = NamedTempFile::new().unwrap();
-    let file_std = NamedTempFile::new().unwrap();
-    let file_bin = NamedTempFile::new().unwrap();
+    let file_opt = NamedTempFile::new().expect("Failed to create temp file");
+    let file_std = NamedTempFile::new().expect("Failed to create temp file");
+    let file_bin = NamedTempFile::new().expect("Failed to create temp file");
 
     // ------------------------------------------------------------------------
     // PHASE 1: WRITE PERFORMANCE
@@ -142,7 +141,7 @@ fn main() -> parcode::Result<()> {
     {
         let mut writer = BufWriter::new(File::create(file_bin.path())?);
         bincode::serde::encode_into_std_write(&map, &mut writer, bincode::config::standard())
-            .unwrap();
+            .expect("Bincode serialization failed");
     }
     let dur = start.elapsed();
     let peak = ALLOCATOR.peak() as f64 / 1_048_576.0;
@@ -152,9 +151,6 @@ fn main() -> parcode::Result<()> {
         dur, peak, size_bin
     );
 
-    // ------------------------------------------------------------------------
-    // PHASE 2: RANDOM ACCESS (1000 Lookups)
-    // ------------------------------------------------------------------------
     println!("\n[PHASE 2: RANDOM ACCESS (1000 lookups)]");
 
     // A. Optimized (Lazy)
@@ -163,8 +159,8 @@ fn main() -> parcode::Result<()> {
     let lazy = reader.read_lazy::<OptimizedMap>()?;
     let start = Instant::now();
     let mut hits = 0;
-    for i in 0..1000 {
-        let key = (i * 12345) as u64 % count as u64;
+    for i in 0u64..1000 {
+        let key = (i * 12345) % count as u64;
         if lazy.data.get(&key)?.is_some() {
             hits += 1;
         }
@@ -180,15 +176,13 @@ fn main() -> parcode::Result<()> {
     assert!(hits > 0);
 
     // B. Standard (Full Load required)
-    // No podemos hacer random access sin cargar todo el blob
     ALLOCATOR.reset();
     let reader = ParcodeReader::open(file_std.path())?;
     let lazy = reader.read_lazy::<StandardMap>()?;
     let start = Instant::now();
-    // Simulamos: Cargar todo 1 vez, luego 1000 lookups en memoria
-    let loaded_map = lazy.data.load()?; // Coste masivo aquí
-    for i in 0..1000 {
-        let key = (i * 12345) as u64 % count as u64;
+    let loaded_map = lazy.data.load()?;
+    for i in 0u64..1000 {
+        let key = (i * 12345) % count as u64;
         black_box(loaded_map.get(&key));
     }
     let dur = start.elapsed();
@@ -204,9 +198,10 @@ fn main() -> parcode::Result<()> {
     let file = File::open(file_bin.path())?;
     let mut reader = BufReader::new(file);
     let loaded_map: HashMap<u64, String> =
-        bincode::serde::decode_from_std_read(&mut reader, bincode::config::standard()).unwrap();
-    for i in 0..1000 {
-        let key = (i * 12345) as u64 % count as u64;
+        bincode::serde::decode_from_std_read(&mut reader, bincode::config::standard())
+            .expect("Bincode deserialization failed");
+    for i in 0u64..1000 {
+        let key = (i * 12345) % count as u64;
         black_box(loaded_map.get(&key));
     }
     let dur = start.elapsed();

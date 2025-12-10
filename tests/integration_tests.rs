@@ -1,4 +1,3 @@
-// ===== tests\integration_tests.rs =====
 //! Integration test suite for Parcode.
 
 #![allow(missing_docs)]
@@ -76,7 +75,7 @@ impl ParcodeVisitor for UserDirectory {
     }
 
     fn create_job(&self, _config_override: Option<JobConfig>) -> Box<dyn SerializationJob<'_>> {
-        panic!("Not used in root read for UserDirectory mock")
+        unreachable!("Not used in root read for UserDirectory mock")
     }
 }
 
@@ -131,7 +130,7 @@ impl ParcodeVisitor for GameLevel {
 impl SerializationJob<'_> for GameLevel {
     fn execute(&self, _children: &[ChildRef]) -> Result<Vec<u8>> {
         let local_data = (&self.id, &self.name);
-        bincode::serde::encode_to_vec(&local_data, bincode::config::standard())
+        bincode::serde::encode_to_vec(local_data, bincode::config::standard())
             .map_err(|e| ParcodeError::Serialization(e.to_string()))
     }
     fn estimated_size(&self) -> usize {
@@ -238,8 +237,8 @@ fn test_primitive_lifecycle() -> Result<()> {
 
 #[test]
 fn test_massive_vector_sharding() -> Result<()> {
-    let count = 100_000;
-    let data: Vec<u64> = (0..count).map(|i| i as u64).collect();
+    let count: u64 = 100_000;
+    let data: Vec<u64> = (0..count).collect();
 
     println!("Generating {} items (~{} KB)...", count, (count * 8) / 1024);
 
@@ -302,7 +301,7 @@ fn test_nested_structures() -> Result<()> {
     let children = root.children()?;
     assert_eq!(children.len(), 1);
 
-    let vec_container = &children[0];
+    let vec_container = children.first().expect("No children found");
     let loaded_users: Vec<TestUser> = vec_container.decode_parallel_collection()?;
 
     assert_eq!(dir.users, loaded_users);
@@ -312,8 +311,8 @@ fn test_nested_structures() -> Result<()> {
 
 #[test]
 fn test_random_access_logic() -> Result<()> {
-    let count = 50_000;
-    let data: Vec<u64> = (0..count).map(|i| i as u64 * 10).collect();
+    let count: u64 = 50_000;
+    let data: Vec<u64> = (0..count).map(|i| i * 10).collect();
 
     let file = NamedTempFile::new()?;
     Parcode::save(file.path(), &data)?;
@@ -355,7 +354,7 @@ fn test_corruption_and_errors() -> Result<()> {
     if let Err(ParcodeError::Format(msg)) = res {
         assert!(msg.contains("Magic"));
     } else {
-        assert!(false, "Did not detect invalid magic bytes");
+        unreachable!("Did not detect invalid magic bytes");
     }
 
     let user = TestUser {
