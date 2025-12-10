@@ -360,7 +360,7 @@ where
         // We limit to 256 shards by default to avoid exploding the graph for huge maps
         // (although the format supports more).
         let target_items_per_bucket = 2000;
-        let num_shards = (total_items / target_items_per_bucket).max(1).min(1024);
+        let num_shards = (total_items / target_items_per_bucket).clamp(1, 1024);
 
         // Phase 1: Distribution (Bucketing)
         // Collect references (&K, &V) to avoid cloning memory.
@@ -368,14 +368,16 @@ where
 
         for (k, v) in self {
             let h = hash_key(k);
-            let idx = (h as usize) % num_shards;
-            buckets[idx].push((k, v));
+            let idx = usize::try_from(h).unwrap_or(0) % num_shards;
+            if let Some(bucket) = buckets.get_mut(idx) {
+                bucket.push((k, v));
+            }
         }
 
         // Phase 2: Node Creation
         // Container Node
         let container_inner = Box::new(MapContainerJob {
-            num_shards: num_shards as u32,
+            num_shards: u32::try_from(num_shards).unwrap_or(u32::MAX),
         });
         // If global compression is enabled, apply it to the container (even though it's small).
         let container_job: Box<dyn SerializationJob<'a> + 'a> = if let Some(cfg) = config_override {

@@ -1,4 +1,4 @@
-/// HashMap Optimization Strategies.
+/// `HashMap` Optimization Strategies.
 ///
 /// This module implements efficient serialization and lookup strategies for `HashMap` types.
 /// It uses hash-based sharding to distribute entries across multiple chunks, enabling:
@@ -39,9 +39,9 @@ pub(crate) fn hash_key<K: Hash>(key: &K) -> u64 {
     hasher.finish()
 }
 
-/// Serialization job for a single HashMap shard.
+/// Serialization job for a single `HashMap` shard.
 ///
-/// This job serializes a subset of the HashMap's entries using a Structure-of-Arrays (SOA) layout.
+/// This job serializes a subset of the `HashMap`'s entries using a Structure-of-Arrays (SOA) layout.
 /// The layout is optimized for:
 /// - **SIMD scanning** during lookups (aligned hash array)
 /// - **Cache efficiency** (sequential memory access patterns)
@@ -56,7 +56,7 @@ pub(crate) fn hash_key<K: Hash>(key: &K) -> u64 {
 /// - `Count`: Number of entries in this shard (u32 LE)
 /// - `Padding`: 4 bytes of zeros to ensure 8-byte alignment for hashes
 /// - `Hashes`: Array of 64-bit hashes (u64 LE), one per entry
-/// - `Offsets`: Array of byte offsets into DataBlob (u32 LE), one per entry
+/// - `Offsets`: Array of byte offsets into `DataBlob` (u32 LE), one per entry
 /// - `DataBlob`: Concatenated bincode-serialized (K, V) tuples
 #[derive(Debug)]
 pub struct MapShardJob<'a, K, V> {
@@ -87,17 +87,14 @@ where
             hashes.extend_from_slice(&hash_key(k).to_le_bytes());
 
             // 2. Record current offset in data blob (for random access)
-            let pos = cursor.position() as u32;
+            let pos = u32::try_from(cursor.position())
+                .map_err(|_| ParcodeError::Serialization("Data blob exceeds 4GB".into()))?;
             offsets.extend_from_slice(&pos.to_le_bytes());
 
             // 3. Serialize (K, V) tuple to data blob
             //    Both key and value are stored to enable collision resolution
-            bincode::serde::encode_into_std_write(
-                &(k, v),
-                &mut cursor,
-                bincode::config::standard(),
-            )
-            .map_err(|e| ParcodeError::Serialization(e.to_string()))?;
+            bincode::serde::encode_into_std_write((k, v), &mut cursor, bincode::config::standard())
+                .map_err(|e| ParcodeError::Serialization(e.to_string()))?;
         }
 
         // 4. Assemble final buffer with proper alignment
@@ -112,7 +109,11 @@ where
         let mut final_buf = Vec::with_capacity(total_size);
 
         // Write Count (u32 LE)
-        final_buf.extend_from_slice(&(count as u32).to_le_bytes());
+        final_buf.extend_from_slice(
+            &u32::try_from(count)
+                .map_err(|_| ParcodeError::Serialization("Shard count exceeds u32".into()))?
+                .to_le_bytes(),
+        );
 
         // Write Padding (4 bytes of zeros for 8-byte alignment)
         final_buf.extend_from_slice(&[0u8; 4]);

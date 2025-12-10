@@ -1,4 +1,4 @@
-//! Demonstrates lazy and granular access to complex structures.
+//! Demostrates lazy and granular access to complex structures.
 //! Run: cargo run --example lazy_loading
 
 #![allow(missing_docs)]
