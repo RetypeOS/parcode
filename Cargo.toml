@@ -19,26 +19,17 @@ memmap2 = "0.9.9"
 rayon = "1.11.0"
 serde = { version = "1.0.228", features = ["derive", "rc"] }
 anyhow = "1.0.100"
-#crossbeam-channel = "0.5.15"
 twox-hash = "2.1.2"
-
 # Optional
 lz4_flex = { version = "0.11.5", optional = true }
 sled = "0.34.7"
-#num_cpus = "1.17.0"
-#clap = { version = "4.5.50", features = ["derive"] }
-#crossbeam-deque = "0.8.6"
-#fxhash = "0.2.1"
-#zstd = { version = "0.13.3", optional = true }
 
 [features]
 default = []
 lz4_flex = ["dep:lz4_flex"]
-#zstd = ["dep:zstd"]
 
 [dev-dependencies]
 tempfile = "3.8"
-#serde = { version = "1.0.228", features = ["derive"] }
 criterion = "0.7.0"
 serde_bytes = "0.11.19"
 

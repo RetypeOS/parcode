@@ -120,9 +120,9 @@ impl<'a, T: ParcodeItem + Send + Sync + 'a> ParcodeCollectionPromise<'a, T> {
     }
 }
 
-/// A promise for a HashMap that supports lazy loading and efficient lookups.
+/// A promise for a `HashMap` that supports lazy loading and efficient lookups.
 ///
-/// This type wraps a `ChunkNode` representing a HashMap and provides methods to:
+/// This type wraps a `ChunkNode` representing a `HashMap` and provides methods to:
 /// - Load the entire map into memory
 /// - Perform O(1) lookups by key without loading the entire map
 #[derive(Debug)]
@@ -146,15 +146,21 @@ where
 
     /// Loads the full map by iterating all shards.
     ///
-    /// This reconstructs the entire HashMap in memory by:
+    /// This reconstructs the entire `HashMap` in memory by:
     /// 1. Reading the number of shards from the container
     /// 2. Iterating over each shard and deserializing its entries
-    /// 3. Merging all entries into a single HashMap
+    /// 3. Merging all entries into a single `HashMap`
     pub fn load(&self) -> Result<HashMap<K, V>> {
         // 1. Read number of shards from container
         let container_payload = self.node.read_raw()?;
         let num_shards = if container_payload.len() >= 4 {
-            u32::from_le_bytes(container_payload[0..4].try_into().unwrap())
+            u32::from_le_bytes(
+                container_payload
+                    .get(0..4)
+                    .ok_or_else(|| crate::ParcodeError::Format("Payload too short".into()))?
+                    .try_into()
+                    .map_err(|_| crate::ParcodeError::Format("Failed to read num_shards".into()))?,
+            )
         } else {
             0
         };
@@ -174,19 +180,37 @@ where
             }
 
             // Parse SOA header
-            let count = u32::from_le_bytes(payload[0..4].try_into().unwrap()) as usize;
+            let count = u32::from_le_bytes(
+                payload
+                    .get(0..4)
+                    .ok_or_else(|| {
+                        crate::ParcodeError::Format("Payload too short for count".into())
+                    })?
+                    .try_into()
+                    .map_err(|_| crate::ParcodeError::Format("Failed to read count".into()))?,
+            ) as usize;
 
             // Layout: Count(4) + Padding(4) + Hashes(8*N) + Offsets(4*N) + Data
             let offsets_start = 8 + (count * 8);
             let data_start = offsets_start + (count * 4);
 
             // Read offsets to iterate data
-            let offsets_bytes = &payload[offsets_start..data_start];
+            let offsets_bytes = payload
+                .get(offsets_start..data_start)
+                .ok_or_else(|| crate::ParcodeError::Format("Offsets out of bounds".into()))?;
 
             for i in 0..count {
-                let off_bytes = &offsets_bytes[i * 4..(i + 1) * 4];
-                let offset = u32::from_le_bytes(off_bytes.try_into().unwrap()) as usize;
-                let data_slice = &payload[data_start + offset..];
+                let off_bytes = offsets_bytes.get(i * 4..(i + 1) * 4).ok_or_else(|| {
+                    crate::ParcodeError::Format("Offset index out of bounds".into())
+                })?;
+                let offset = u32::from_le_bytes(
+                    off_bytes
+                        .try_into()
+                        .map_err(|_| crate::ParcodeError::Format("Failed to read offset".into()))?,
+                ) as usize;
+                let data_slice = payload.get(data_start + offset..).ok_or_else(|| {
+                    crate::ParcodeError::Format("Data slice out of bounds".into())
+                })?;
 
                 // Deserialize (K, V) pair
                 let (k, v): (K, V) =
@@ -219,11 +243,17 @@ where
         if container_payload.len() < 4 {
             return Ok(None);
         } // Empty
-        let num_shards = u32::from_le_bytes(container_payload[0..4].try_into().unwrap());
+        let num_shards = u32::from_le_bytes(
+            container_payload
+                .get(0..4)
+                .ok_or_else(|| crate::ParcodeError::Format("Payload too short".into()))?
+                .try_into()
+                .map_err(|_| crate::ParcodeError::Format("Failed to read num_shards".into()))?,
+        );
 
         // 2. Hash & Select Shard
         let target_hash = crate::map::hash_key(key);
-        let shard_idx = (target_hash as usize) % (num_shards as usize);
+        let shard_idx = usize::try_from(target_hash).unwrap_or(0) % (num_shards as usize);
 
         // 3. Load Shard
         let shard = self.node.get_child_by_index(shard_idx)?;
@@ -233,7 +263,13 @@ where
             return Ok(None);
         } // Empty shard
 
-        let count = u32::from_le_bytes(payload[0..4].try_into().unwrap()) as usize;
+        let count = u32::from_le_bytes(
+            payload
+                .get(0..4)
+                .ok_or_else(|| crate::ParcodeError::Format("Payload too short for count".into()))?
+                .try_into()
+                .map_err(|_| crate::ParcodeError::Format("Failed to read count".into()))?,
+        ) as usize;
         // Skip 4 bytes padding -> Offset 8
 
         let hashes_start = 8;
@@ -242,17 +278,33 @@ where
         let data_start = offsets_start + (count * 4);
 
         // 4. Fast Scan (SIMD Optimized via chunks_exact)
-        let hashes_slice = &payload[hashes_start..hashes_end];
+        let hashes_slice = payload
+            .get(hashes_start..hashes_end)
+            .ok_or_else(|| crate::ParcodeError::Format("Hashes slice out of bounds".into()))?;
 
         for (i, chunk) in hashes_slice.chunks_exact(8).enumerate() {
-            let h = u64::from_le_bytes(chunk.try_into().unwrap());
+            let h = u64::from_le_bytes(
+                chunk
+                    .try_into()
+                    .map_err(|_| crate::ParcodeError::Format("Failed to read hash".into()))?,
+            );
 
             if h == target_hash {
                 // Candidate found. Verify key to handle hash collisions.
-                let offset_bytes = &payload[offsets_start + (i * 4)..];
-                let offset = u32::from_le_bytes(offset_bytes[0..4].try_into().unwrap()) as usize;
+                let offset_bytes = payload
+                    .get(offsets_start + (i * 4)..offsets_start + (i * 4) + 4)
+                    .ok_or_else(|| {
+                        crate::ParcodeError::Format("Offset bytes out of bounds".into())
+                    })?;
+                let offset = u32::from_le_bytes(
+                    offset_bytes
+                        .try_into()
+                        .map_err(|_| crate::ParcodeError::Format("Failed to read offset".into()))?,
+                ) as usize;
 
-                let data_slice = &payload[data_start + offset..];
+                let data_slice = payload.get(data_start + offset..).ok_or_else(|| {
+                    crate::ParcodeError::Format("Data slice out of bounds".into())
+                })?;
 
                 // Deserialize (K, V)
                 // Use bincode::deserialize_from slice. Bincode knows when to stop.

@@ -49,7 +49,7 @@ pub trait ParcodeVisitor {
 
     /// Serializes a slice of objects.
     /// Default implementation uses bincode for the whole slice (optimized).
-    /// Types with chunkable fields should override this to iterate and call serialize_shallow.
+    /// Types with chunkable fields should override this to iterate and call `serialize_shallow`.
     fn serialize_slice<W: std::io::Write>(
         slice: &[Self],
         writer: &mut W,

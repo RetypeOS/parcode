@@ -70,11 +70,11 @@ struct WorldState {
     id: u64,
     name: String,
 
-    // Test: Acceso O(1) en Mapa
+    // Test: O(1) Access in Map
     #[parcode(map)]
     users: HashMap<u64, UserProfile>,
 
-    // Test: Lazy Navigation (Recursiva)
+    // Test: Lazy Navigation (Recursive)
     #[parcode(chunkable)]
     regions: Vec<Region>,
 
@@ -87,7 +87,7 @@ struct WorldState {
 struct Region {
     id: u32,
     name: String,
-    // Nested Chunkable: Permite cargar una región sin cargar sus zonas
+    // Nested Chunkable: It allows loading a region without loading its zones.
     #[parcode(chunkable)]
     zones: Vec<Zone>,
 }
@@ -95,7 +95,7 @@ struct Region {
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug, ParcodeObject)]
 struct Zone {
     id: u32,
-    // Payload pesado
+    // Heavy payload
     #[parcode(chunkable)]
     terrain_data: Vec<u8>,
 }

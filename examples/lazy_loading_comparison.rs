@@ -105,7 +105,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Bincode total time: {:.2?}", start_total.elapsed());
 
-    // ---------------- SLED ----------------
+    /*// ---------------- SLED ----------------
     println!("\n=== Sled ===");
     let temp_dir = tempdir()?;
     let db = sled::open(temp_dir.path()).expect("open sled db");
@@ -156,6 +156,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     println!("Sled total time: {:.2?}", start_total.elapsed());
+    */
 
     println!("\n--- Comparison finished ---");
     Ok(())

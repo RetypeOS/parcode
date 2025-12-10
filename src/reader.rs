@@ -65,7 +65,10 @@ pub trait ParcodeItem: Sized + Send + Sync + 'static {
             bincode::serde::decode_from_std_read::<u64, _, _>(reader, bincode::config::standard())
                 .map_err(|e| ParcodeError::Serialization(e.to_string()))?;
 
-        let mut vec = Vec::with_capacity(len as usize);
+        let mut vec = Vec::with_capacity(
+            usize::try_from(len)
+                .map_err(|_| ParcodeError::Serialization("Vector length exceeds usize".into()))?,
+        );
         for _ in 0..len {
             vec.push(Self::read_from_shard(reader, children)?);
         }
@@ -118,29 +121,20 @@ where
     V: DeserializeOwned + Send + Sync,
 {
     fn from_node(node: &ChunkNode<'_>) -> Result<Self> {
-        // Usar la lógica de ParcodeMapPromise::load() o similar
-        // Dado que ParcodeMapPromise está en 'rt', y 'rt' usa 'reader',
-        // podemos implementar la lógica aquí o usar rt si no hay ciclo.
-        // Mejor implementar la lógica de "Load All Shards" aquí.
-
-        // 1. Leer contenedor (num shards)
+        // 1. Read container (num shards)
         let container_payload = node.read_raw()?;
         if container_payload.len() < 4 {
-            return Ok(HashMap::new());
+            return Ok(Self::new());
         }
 
-        // Si el payload es grande, quizás no es un mapa sharded, sino un blob bincode directo.
-        // ParcodeVisitor para Map tiene dos modos: Optimizado (Sharded) y Estándar (Blob).
-        // Si es Blob, node.child_count == 0.
-
+        // If it's a Blob, node.child_count == 0.
         if node.child_count == 0 {
-            return node.decode(); // Fallback a Bincode normal
+            return node.decode(); // Fallback to normal Bincode
         }
 
-        // Si tiene hijos, es Sharded Map.
-        // Reutilizamos la lógica de iterar shards.
+        // If it has children, it's a Sharded Map.
         let shards = node.children()?;
-        let mut map = HashMap::new();
+        let mut map = Self::new();
 
         for shard in shards {
             let payload = shard.read_raw()?;
@@ -148,15 +142,31 @@ where
                 continue;
             }
 
-            let count = u32::from_le_bytes(payload[0..4].try_into().unwrap()) as usize;
+            let count = u32::from_le_bytes(
+                payload
+                    .get(0..4)
+                    .ok_or_else(|| ParcodeError::Format("Payload too short for count".into()))?
+                    .try_into()
+                    .map_err(|_| ParcodeError::Format("Failed to read count".into()))?,
+            ) as usize;
             let offsets_start = 8 + (count * 8);
             let data_start = offsets_start + (count * 4);
-            let offsets_bytes = &payload[offsets_start..data_start];
+            let offsets_bytes = payload
+                .get(offsets_start..data_start)
+                .ok_or_else(|| ParcodeError::Format("Offsets out of bounds".into()))?;
 
             for i in 0..count {
-                let off_bytes = &offsets_bytes[i * 4..(i + 1) * 4];
-                let offset = u32::from_le_bytes(off_bytes.try_into().unwrap()) as usize;
-                let data_slice = &payload[data_start + offset..];
+                let off_bytes = offsets_bytes
+                    .get(i * 4..(i + 1) * 4)
+                    .ok_or_else(|| ParcodeError::Format("Offset index out of bounds".into()))?;
+                let offset = u32::from_le_bytes(
+                    off_bytes
+                        .try_into()
+                        .map_err(|_| ParcodeError::Format("Failed to read offset".into()))?,
+                ) as usize;
+                let data_slice = payload
+                    .get(data_start + offset..)
+                    .ok_or_else(|| ParcodeError::Format("Data slice out of bounds".into()))?;
                 let (k, v) =
                     bincode::serde::decode_from_slice(data_slice, bincode::config::standard())
                         .map_err(|e| ParcodeError::Serialization(e.to_string()))?
