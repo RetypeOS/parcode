@@ -34,13 +34,13 @@ pub fn derive_parcode_object(input: TokenStream) -> TokenStream {
             Err(e) => return e.to_compile_error().into(),
         };
 
-        // CORRECCIÓN: Si es 'map', implícitamente es chunkable (es un nodo hijo).
+        // If it's 'map', it's implicitly chunkable (it's a child node).
         if is_chunkable || is_map {
             remotes.push(RemoteField {
                 ident: field.ident.clone().unwrap(),
                 ty: field.ty.clone(),
                 compression_id,
-                is_map, // NUEVO CAMPO
+                is_map,
             });
         } else {
             locals.push(LocalField {
@@ -93,7 +93,6 @@ fn parse_attributes(attrs: &[Attribute]) -> syn::Result<(bool, u8, bool)> {
                     return Ok(());
                 }
 
-                // NUEVO: Soporte para #[parcode(map)]
                 if meta.path.is_ident("map") {
                     is_map = true;
                     return Ok(());
@@ -119,6 +118,7 @@ fn parse_attributes(attrs: &[Attribute]) -> syn::Result<(bool, u8, bool)> {
 }
 
 // --- Generator: ParcodeVisitor ---
+
 fn generate_visitor(
     name: &syn::Ident,
     remotes: &[RemoteField],
@@ -185,8 +185,6 @@ fn generate_visitor(
             }
 
             fn visit_inlined<'a>(&'a self, graph: &mut parcode::graph::TaskGraph<'a>, pid: parcode::graph::ChunkId, _config_override: Option<parcode::graph::JobConfig>) {
-                // Inlined Visit: Do NOT create a node for self.
-                // Just visit chunkable children and link them to the provided parent (pid).
                 #(#visit_children_inlined)*
             }
 
@@ -367,18 +365,7 @@ fn generate_lazy_mirror(
         .chain(remotes.iter().map(|f| {
             let n = &f.ident;
             let t = &f.ty;
-
-            if f.is_map {
-                // CORRECCIÓN VITAL: Si es mapa, usamos ParcodeMapPromise explícitamente.
-                // Necesitamos extraer K y V del tipo HashMap<K,V>.
-                // Parsear generics en syn es complejo.
-                // ALTERNATIVA MEJOR: Usamos el trait ParcodeLazyRef que definimos para HashMap.
-                // HashMap implementa Lazy = ParcodeMapPromise.
-                // Así que la lógica es IDÉNTICA al caso estándar: <T>::Lazy.
-                quote! { pub #n: <#t as parcode::rt::ParcodeLazyRef<'a>>::Lazy }
-            } else {
-                quote! { pub #n: <#t as parcode::rt::ParcodeLazyRef<'a>>::Lazy }
-            }
+            quote! { pub #n: <#t as parcode::rt::ParcodeLazyRef<'a>>::Lazy }
         }));
 
     let assign_remotes_stmts = remotes.iter().map(|f| {

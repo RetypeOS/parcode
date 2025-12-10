@@ -286,11 +286,12 @@ where
     }
 }
 
-// --- SOPORTE PARA HASHMAP ---
+// --- HASHMAP SUPPORT ---
 
-/// El trabajo que serializa el contenedor de un Mapa.
-/// Su único payload es el número de shards (u32), necesario para que el lector
-/// calcule el módulo del hash correctamente.
+/// The job that serializes a Map container node.
+///
+/// Its only payload is the number of shards (u32), which is necessary for the reader
+/// to calculate the hash modulo correctly during lookups.
 #[derive(Clone)]
 struct MapContainerJob {
     num_shards: u32,
@@ -298,7 +299,7 @@ struct MapContainerJob {
 
 impl<'a> SerializationJob<'a> for MapContainerJob {
     fn execute(&self, _children_refs: &[ChildRef]) -> Result<Vec<u8>> {
-        // Escribimos simplemente el número de shards en Little Endian.
+        // Write the number of shards in Little Endian format.
         Ok(self.num_shards.to_le_bytes().to_vec())
     }
 
@@ -318,15 +319,15 @@ where
         parent_id: Option<ChunkId>,
         config_override: Option<JobConfig>,
     ) {
-        // Detectamos si se solicitó la optimización de mapa
+        // Detect if map optimization was requested
         let is_map_optimized = config_override.map(|c| c.is_map).unwrap_or(false);
         let total_items = self.len();
 
         if !is_map_optimized || total_items < 200 {
-            // Estrategia Estándar: Blob único.
-            // Si parent_id es None, somos raíz -> Crear nodo.
-            // Si parent_id es Some, somos un hijo chunkable -> Crear nodo y enlazar.
-            // (La macro solo llama a visit con Some si el campo es chunkable).
+            // Standard Strategy: Single blob.
+            // If parent_id is None, we are root -> Create node.
+            // If parent_id is Some, we are a chunkable child -> Create node and link.
+            // (The macro only calls visit with Some if the field is chunkable).
 
             let job = if total_items != 0 {
                 self.create_job(config_override)
@@ -341,9 +342,9 @@ where
             return;
         }
 
-        //// Estrategia Optimizada (Bucketing + Micro-Index)
+        //// Optimized Strategy (Bucketing + Micro-Index)
         //if total_items == 0 {
-        //    // Mapa vacío -> Contenedor con 0 shards
+        //    // Empty map -> Container with 0 shards
         //    let container = Box::new(MapContainerJob { num_shards: 0 });
         //    let id = graph.add_node(container);
         //    if let Some(p) = parent_id {
@@ -352,17 +353,17 @@ where
         //    return;
         //}
 
-        // Heurística de Sharding:
-        // Buscamos que cada shard tenga un tamaño razonable para búsqueda lineal rápida.
-        // 500-1000 items por bucket suele ser un buen balance para evitar colisiones
-        // y mantener el micro-índice en caché L1/L2.
-        // Limitamos a 256 shards por defecto para no explotar el grafo en mapas gigantes
-        // (aunque el formato soporta más).
+        // Sharding Heuristic:
+        // We aim for each shard to have a reasonable size for fast linear search.
+        // 500-1000 items per bucket is typically a good balance to avoid collisions
+        // and keep the micro-index in L1/L2 cache.
+        // We limit to 256 shards by default to avoid exploding the graph for huge maps
+        // (although the format supports more).
         let target_items_per_bucket = 2000;
         let num_shards = (total_items / target_items_per_bucket).max(1).min(1024);
 
-        // Fase 1: Distribución (Bucketing)
-        // Recolectamos referencias (&K, &V) para no clonar la memoria.
+        // Phase 1: Distribution (Bucketing)
+        // Collect references (&K, &V) to avoid cloning memory.
         let mut buckets = vec![Vec::new(); num_shards];
 
         for (k, v) in self {
@@ -371,12 +372,12 @@ where
             buckets[idx].push((k, v));
         }
 
-        // Fase 2: Creación de Nodos
-        // Nodo Contenedor
+        // Phase 2: Node Creation
+        // Container Node
         let container_inner = Box::new(MapContainerJob {
             num_shards: num_shards as u32,
         });
-        // Si hay compresión global, la aplicamos al contenedor (aunque es pequeño).
+        // If global compression is enabled, apply it to the container (even though it's small).
         let container_job: Box<dyn SerializationJob<'a> + 'a> = if let Some(cfg) = config_override {
             Box::new(crate::rt::ConfiguredJob::new(container_inner, cfg))
         } else {
@@ -388,15 +389,16 @@ where
             graph.link_parent_child(p, my_id);
         }
 
-        // Nodos Shard
+        // Shard Nodes
         for bucket in buckets {
+            // Optimization: Don't create empty shards
             if bucket.is_empty() {
                 continue;
-            } // Optimizacion: No crear shards vacíos
+            }
 
             let shard_inner = Box::new(MapShardJob { items: bucket });
 
-            // Aplicamos la misma configuración (compresión) a los shards
+            // Apply the same configuration (compression) to the shards
             let shard_job: Box<dyn SerializationJob<'a> + 'a> = if let Some(cfg) = config_override {
                 Box::new(crate::rt::ConfiguredJob::new(shard_inner, cfg))
             } else {
@@ -412,7 +414,7 @@ where
         &'a self,
         config_override: Option<JobConfig>,
     ) -> Box<dyn SerializationJob<'a> + 'a> {
-        // Fallback para cuando se usa como primitivo (sin estrategia de mapa)
+        // Fallback for when used as a primitive (without map strategy)
         let base_job = Box::new(PrimitiveJob(self.clone()));
         if let Some(cfg) = config_override {
             Box::new(crate::rt::ConfiguredJob::new(base_job, cfg))

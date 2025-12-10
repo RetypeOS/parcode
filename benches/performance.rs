@@ -30,7 +30,7 @@ impl ParcodeVisitor for BenchCollection {
         parent_id: Option<ChunkId>,
         config_override: Option<JobConfig>,
     ) {
-        // Delegamos al Vec interno, propagando la configuración
+        // Delegate to the internal Vec, propagating the configuration
         self.0.visit(graph, parent_id, config_override);
     }
 
@@ -144,13 +144,12 @@ fn bench_readers(c: &mut Criterion) {
         })
     });
 
-    // 2. Parcode: Random Access (Item único)
+    // 2. Parcode: Random Access (Single item)
     group.bench_function("parcode_random_access_10", |b| {
         b.iter(|| {
             let reader = ParcodeReader::open(&parcode_path).unwrap();
             let root = reader.root().unwrap();
 
-            // Usamos la API de alto nivel get_item
             for i in (0..10).map(|x| x * (item_count / 10)) {
                 let _obj: BenchItem = root.get(i).unwrap();
             }
@@ -163,14 +162,14 @@ fn bench_readers(c: &mut Criterion) {
             let reader = ParcodeReader::open(&parcode_path).unwrap();
             let root = reader.root().unwrap();
 
-            // Obtenemos los Shards (Hijos directos)
+            // Get the Shards (direct children)
             let shards = root.children().unwrap();
 
             for shard_node in shards {
-                // Deserializamos el Shard completo (Vec<BenchItem>)
+                // Deserialize the complete Shard (Vec<BenchItem>)
                 let items: Vec<BenchItem> = shard_node.decode().unwrap();
 
-                // Iteramos los items en memoria (simulando uso)
+                // Iterate items in memory (simulating usage)
                 for item in items {
                     black_box(item);
                 }
@@ -184,7 +183,6 @@ fn bench_readers(c: &mut Criterion) {
         b.iter(|| {
             let reader = ParcodeReader::open(&parcode_path).unwrap();
             let root = reader.root().unwrap();
-            // Reconstruye el Vec<BenchItem> completo usando todos los cores
             let _res: Vec<BenchItem> = root.decode_parallel_collection().unwrap();
         })
     });
