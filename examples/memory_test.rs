@@ -151,7 +151,7 @@ fn generate_dataset(count: usize) -> Vec<ComplexItem> {
 // 4. MAIN BENCHMARK
 // ============================================================================
 
-fn main() -> anyhow::Result<()> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     const ITEM_COUNT: usize = 200_000;
     // Approx size: 200k * ~600 bytes = ~120 MB raw data
 

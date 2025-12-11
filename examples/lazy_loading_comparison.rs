@@ -105,59 +105,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Bincode total time: {:.2?}", start_total.elapsed());
 
-    /*// ---------------- SLED ----------------
-    println!("\n=== Sled ===");
-    let temp_dir = tempdir()?;
-    let db = sled::open(temp_dir.path()).expect("open sled db");
-    let start_total = Instant::now();
-
-    let start_write = Instant::now();
-    db.insert(
-        "world",
-        bincode::serde::encode_to_vec(&world, bincode::config::standard())?,
-    )
-    .unwrap();
-    db.insert(
-        "asset:skybox",
-        bincode::serde::encode_to_vec(&world.skybox, bincode::config::standard())?,
-    )
-    .unwrap();
-    db.insert(
-        "asset:terrain",
-        bincode::serde::encode_to_vec(&world.terrain, bincode::config::standard())?,
-    )
-    .unwrap();
-    db.flush().unwrap();
-    println!("Writting: {:.2?}", start_write.elapsed());
-
-    let start_meta = Instant::now();
-    let world_data: GameWorld = bincode::serde::decode_from_slice(
-        &db.get("world").unwrap().unwrap(),
-        bincode::config::standard(),
-    )
-    .unwrap()
-    .0;
-    println!("Metadata reading: {:.2?}", start_meta.elapsed());
-    println!("World Name: {}", world_data.world_name);
-    println!("Skybox ID: {}", world_data.skybox.id);
-    println!("Terrain ID: {}", world_data.terrain.id);
-
-    let start_sky = Instant::now();
-    let skybox_data: BigAsset = bincode::serde::decode_from_slice(
-        &db.get("asset:skybox").unwrap().unwrap(),
-        bincode::config::standard(),
-    )
-    .unwrap()
-    .0;
-    println!(
-        "Skybox access: {:.2?} ({} bytes)",
-        start_sky.elapsed(),
-        skybox_data.data.len()
-    );
-
-    println!("Sled total time: {:.2?}", start_total.elapsed());
-    */
-
     println!("\n--- Comparison finished ---");
     Ok(())
 }
