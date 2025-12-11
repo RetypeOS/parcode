@@ -1,3 +1,9 @@
+//! `HashMap` optimization strategies for efficient serialization and lookups.
+//!
+//! This module implements hash-based sharding for `HashMap` types, enabling O(1) lookups
+//! without loading the entire collection into memory. See the module documentation for
+//! detailed information about the sharding strategy and SOA layout.
+
 /// `HashMap` Optimization Strategies.
 ///
 /// This module implements efficient serialization and lookup strategies for `HashMap` types.

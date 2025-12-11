@@ -1,23 +1,158 @@
 //! The Read-Side Engine: Parallel Reconstruction & Random Access.
 //!
-//! This module implements the logic to map a `parcode` file into memory and reconstruct
-//! complex data structures efficiently.
+//! This module implements the complete reading pipeline for Parcode files, providing both
+//! eager (full deserialization) and lazy (on-demand) loading strategies. It leverages memory
+//! mapping, parallel reconstruction, and zero-copy techniques to maximize performance.
 //!
-//! # Core Architectures
+//! ## Core Architecture
 //!
-//! 1. **Lazy Traversal:** The file is Memory Mapped (`mmap`). We only read/decompress bytes
-//!    when a specific node is requested.
+//! The reader is built on three foundational techniques:
 //!
-//! 2. **O(1) Arithmetic Navigation:** Using the RLE metadata stored in container nodes,
-//!    we can calculate exactly which physical Chunk holds the Nth item of a collection,
-//!    allowing random access without linear scans.
+//! ### 1. Memory Mapping (`mmap`)
 //!
-//! 3. **Parallel Zero-Copy Stitching:** When reconstructing large `Vec<T>`, we:
-//!    - Pre-allocate the final uninitialized memory buffer.
-//!    - Calculate the destination offset for every shard.
-//!    - Use `rayon` to dispatch parallel workers.
-//!    - Each worker decodes a shard and writes directly into the final buffer.
-//!    - **Result:** Maximized memory bandwidth, zero intermediate allocations.
+//! Instead of reading the entire file into memory, Parcode uses `mmap` to map the file
+//! directly into the process's address space. This provides several benefits:
+//!
+//! - **Instant Startup:** Opening a file is O(1) regardless of size
+//! - **OS-Managed Paging:** The operating system handles loading pages on demand
+//! - **Zero-Copy Reads:** Uncompressed data can be read directly from the mapped region
+//! - **Shared Memory:** Multiple processes can share the same mapped file
+//!
+//! ### 2. Lazy Traversal
+//!
+//! The file is traversed lazily - we only read and decompress bytes when a specific node
+//! is requested. This enables:
+//!
+//! - **Cold Start Performance:** Applications can start in microseconds
+//! - **Selective Loading:** Load only the data you need
+//! - **Deep Navigation:** Traverse object hierarchies without I/O
+//!
+//! ### 3. Parallel Zero-Copy Stitching
+//!
+//! When reconstructing large `Vec<T>`, we use a sophisticated parallel algorithm:
+//!
+//! ```text
+//! ┌─────────────────────────────────────────────────────────────┐
+//! │ 1. Pre-allocate uninitialized buffer (MaybeUninit<T>)       │
+//! ├─────────────────────────────────────────────────────────────┤
+//! │ 2. Calculate destination offset for each shard              │
+//! ├─────────────────────────────────────────────────────────────┤
+//! │ 3. Spawn parallel workers (Rayon)                           │
+//! ├─────────────────────────────────────────────────────────────┤
+//! │ 4. Each worker:                                             │
+//! │    - Decompresses its shard                                 │
+//! │    - Deserializes items                                     │
+//! │    - Writes directly to final buffer (ptr::copy)            │
+//! ├─────────────────────────────────────────────────────────────┤
+//! │ 5. Transmute buffer to Vec<T> (all items initialized)       │
+//! └─────────────────────────────────────────────────────────────┘
+//! ```
+//!
+//! **Result:** Maximum memory bandwidth, zero intermediate allocations, perfect parallelism.
+//!
+//! ## O(1) Arithmetic Navigation
+//!
+//! Using the RLE (Run-Length Encoding) metadata stored in container nodes, we can calculate
+//! exactly which physical chunk holds the Nth item of a collection. This enables:
+//!
+//! - **Random Access:** `vec.get(1_000_000)` without loading the entire vector
+//! - **Constant Time:** O(1) shard selection via arithmetic
+//! - **Minimal I/O:** Load only the shard containing the target item
+//!
+//! ## Trait System for Strategy Selection
+//!
+//! The module defines two key traits that enable automatic strategy selection:
+//!
+//! ### [`ParcodeNative`]
+//!
+//! Types implementing this trait know how to reconstruct themselves from a [`ChunkNode`].
+//! The high-level API ([`Parcode::read`](crate::Parcode::read)) uses this trait to
+//! automatically select the optimal reconstruction strategy:
+//!
+//! - **`Vec<T>`:** Uses parallel reconstruction across shards
+//! - **`HashMap<K, V>`:** Reconstructs all shards and merges entries
+//! - **Primitives/Structs:** Uses sequential deserialization
+//!
+//! ### [`ParcodeItem`]
+//!
+//! Types implementing this trait can be read from a shard (payload + children). This trait
+//! is used internally during parallel reconstruction to deserialize individual items or
+//! slices of items from shard payloads.
+//!
+//! ## Usage Patterns
+//!
+//! ### Eager Loading (Full Deserialization)
+//!
+//! ```rust,ignore
+//! use parcode::Parcode;
+//!
+//! // Load entire object into memory
+//! let data: Vec<i32> = Parcode::read("numbers.par")?;
+//! ```
+//!
+//! ### Lazy Loading (On-Demand)
+//!
+//! ```rust,ignore
+//! use parcode::ParcodeReader;
+//!
+//! let reader = ParcodeReader::open("game.par")?;
+//! let game_lazy = reader.read_lazy::<GameState>()?;
+//!
+//! // Access local fields (instant, already in memory)
+//! println!("Level: {}", game_lazy.level);
+//!
+//! // Load remote fields on demand
+//! let assets = game_lazy.assets.load()?;
+//! ```
+//!
+//! ### Random Access
+//!
+//! ```rust,ignore
+//! let reader = ParcodeReader::open("data.par")?;
+//! let root = reader.root()?;
+//!
+//! // Get item at index 1,000,000 without loading the entire vector
+//! let item: MyStruct = root.get(1_000_000)?;
+//! ```
+//!
+//! ### Streaming Iteration
+//!
+//! ```rust,ignore
+//! let reader = ParcodeReader::open("data.par")?;
+//! let root = reader.root()?;
+//!
+//! // Iterate over millions of items with constant memory usage
+//! for item_result in root.iter::<MyStruct>()? {
+//!     let item = item_result?;
+//!     process(item);
+//! }
+//! ```
+//!
+//! ## Performance Characteristics
+//!
+//! - **File Opening:** O(1) - just maps the file
+//! - **Root Access:** O(1) - reads only the global header
+//! - **Random Access:** O(1) - arithmetic shard selection + single shard load
+//! - **Parallel Reconstruction:** O(N/cores) - scales linearly with CPU cores
+//! - **Memory Usage (Lazy):** O(accessed chunks) - only loaded data consumes RAM
+//! - **Memory Usage (Eager):** O(N) - entire object in memory
+//!
+//! ## Thread Safety
+//!
+//! - **[`ParcodeReader`]:** Cheap to clone (Arc-based), safe to share across threads
+//! - **[`ChunkNode`]:** Immutable view, safe to share across threads
+//! - **Parallel Reconstruction:** Uses Rayon's work-stealing scheduler
+//!
+//! ## Safety Considerations
+//!
+//! The module uses `unsafe` code in two specific contexts:
+//!
+//! 1. **Memory Mapping:** `mmap` is inherently unsafe if the file is modified externally.
+//!    We assume files are immutable during reading.
+//!
+//! 2. **Parallel Stitching:** Uses `MaybeUninit` and pointer arithmetic to avoid
+//!    initialization overhead. All unsafe operations are carefully encapsulated and
+//!    documented with safety invariants.
 
 use memmap2::Mmap;
 use rayon::prelude::*;
@@ -38,24 +173,125 @@ use crate::rt::ParcodeLazyRef;
 
 // --- TRAIT SYSTEM FOR AUTOMATIC STRATEGY SELECTION ---
 
-/// A trait for types that know how to reconstruct themselves from a `ChunkNode`.
+/// A trait for types that know how to reconstruct themselves from a [`ChunkNode`].
 ///
-/// This allows the high-level API (`Parcode::read`) to automatically select the
-/// optimal strategy (Parallel vs Sequential) based on the type being read.
+/// This trait enables the high-level API ([`Parcode::read`](crate::Parcode::read)) to
+/// automatically select the optimal reconstruction strategy based on the type being read.
+///
+/// ## Strategy Selection
+///
+/// Different types use different reconstruction strategies:
+///
+/// - **`Vec<T>`:** Parallel reconstruction across shards (see [`ChunkNode::decode_parallel_collection`])
+/// - **`HashMap<K, V>`:** Shard merging with SOA deserialization
+/// - **Primitives:** Direct bincode deserialization
+/// - **Custom Structs:** Sequential deserialization of local fields + recursive child loading
+///
+/// ## Automatic Implementation
+///
+/// This trait is automatically implemented by the `#[derive(ParcodeObject)]` macro for custom
+/// structs. Primitive types and standard collections have manual implementations in this module.
+///
+/// ## Example
+///
+/// ```rust,ignore
+/// use parcode::reader::ParcodeNative;
+///
+/// // Automatically selects parallel reconstruction for Vec
+/// let data: Vec<i32> = Parcode::read("numbers.par")?;
+///
+/// // Automatically selects sequential deserialization for primitives
+/// let value: i32 = Parcode::read("value.par")?;
+/// ```
 pub trait ParcodeNative: Sized {
     /// Reconstructs the object from the given graph node.
+    ///
+    /// This method is called by [`Parcode::read`](crate::Parcode::read) after opening the
+    /// file and locating the root chunk. Implementations should choose the most efficient
+    /// reconstruction strategy for their type.
+    ///
+    /// ## Parameters
+    ///
+    /// * `node`: The chunk node to reconstruct from (typically the root node)
+    ///
+    /// ## Returns
+    ///
+    /// The fully reconstructed object of type `Self`.
+    ///
+    /// ## Errors
+    ///
+    /// Returns an error if:
+    /// - Decompression fails
+    /// - Deserialization fails (type mismatch, corrupted data)
+    /// - Child nodes are missing or invalid
     fn from_node(node: &ChunkNode<'_>) -> Result<Self>;
 }
 
 /// A trait for types that can be read from a shard (payload + children).
+///
+/// This trait is used internally during parallel reconstruction to deserialize individual
+/// items or slices of items from shard payloads. It provides two methods:
+///
+/// - [`read_from_shard`](Self::read_from_shard): Reads a single item
+/// - [`read_slice_from_shard`](Self::read_slice_from_shard): Reads multiple items (optimized)
+///
+/// ## Automatic Implementation
+///
+/// This trait is automatically implemented by the `#[derive(ParcodeObject)]` macro. Primitive
+/// types have optimized implementations that use bulk deserialization.
+///
+/// ## Thread Safety
+///
+/// Implementations must be `Send + Sync + 'static` to support parallel reconstruction across
+/// threads. This is automatically satisfied for most types.
 pub trait ParcodeItem: Sized + Send + Sync + 'static {
     /// Reads a single item from the shard payload and children.
+    ///
+    /// This method is called during deserialization to reconstruct individual items from
+    /// a shard's payload. For types with chunkable fields, this method should deserialize
+    /// local fields from the reader and reconstruct remote fields from the children iterator.
+    ///
+    /// ## Parameters
+    ///
+    /// * `reader`: Cursor over the shard's decompressed payload
+    /// * `children`: Iterator over child nodes (for chunkable fields)
+    ///
+    /// ## Returns
+    ///
+    /// The deserialized item.
+    ///
+    /// ## Errors
+    ///
+    /// Returns an error if deserialization fails or children are missing.
     fn read_from_shard(
         reader: &mut std::io::Cursor<&[u8]>,
         children: &mut std::vec::IntoIter<ChunkNode<'_>>,
     ) -> Result<Self>;
 
     /// Reads a slice of items from the shard payload and children.
+    ///
+    /// This method provides an optimization opportunity for types that can deserialize
+    /// multiple items more efficiently than calling [`read_from_shard`](Self::read_from_shard)
+    /// in a loop.
+    ///
+    /// ## Default Implementation
+    ///
+    /// The default implementation reads the slice length (u64) and then calls
+    /// `read_from_shard` for each item. Primitive types override this to use bulk
+    /// deserialization.
+    ///
+    /// ## Parameters
+    ///
+    /// * `reader`: Cursor over the shard's decompressed payload
+    /// * `children`: Iterator over child nodes (for chunkable fields)
+    ///
+    /// ## Returns
+    ///
+    /// A vector containing all deserialized items.
+    ///
+    /// ## Errors
+    ///
+    /// Returns an error if deserialization fails or the slice length exceeds `usize`.
     fn read_slice_from_shard(
         reader: &mut std::io::Cursor<&[u8]>,
         children: &mut std::vec::IntoIter<ChunkNode<'_>>,
