@@ -685,25 +685,22 @@ impl<'a> ChunkNode<'a> {
 
     /// **Parallel Shard Reconstruction**
     ///
-    /// This method reconstructs a `Vec<T>` by deserializing all shards in parallel
-    /// and writing them directly into a preallocated buffer. It is designed for
-    /// high‑performance scenarios where collections are split into shards.
+    /// Reconstructs a `Vec<T>` by deserializing shards concurrently.
     ///
-    /// # Safety & Performance Considerations
-    /// - **Uninitialized Allocation:** Uses `MaybeUninit` to allocate the final buffer
-    ///   without zero‑initialization cost.
-    /// - **Parallel Filling:** Uses `rayon` to concurrently populate disjoint regions.
-    /// - **Ownership Management:** Wraps temporary vectors in `ManuallyDrop` to prevent
-    ///   double‑free errors when moving memory via `ptr::copy`.
-    /// - **Pointer Arithmetic:** Converts the buffer base pointer to `usize` to safely
-    ///   share it across thread boundaries (`Send + Sync + Copy`).
+    /// # Safety
+    /// This function uses `unsafe` to write directly into an uninitialized buffer.
+    /// To ensure safety:
+    /// 1. We pre-calculate correct offsets using RLE metadata.
+    /// 2. We cast the buffer pointer to `usize` to safely pass it to Rayon threads.
+    /// 3. **CRITICAL:** We verify that the number of items read from a shard matches
+    ///    the RLE expectation (`expected_count`). If not, we abort before writing,
+    ///    preventing partial initialization UB.
     pub fn decode_parallel_collection<T>(&self) -> Result<Vec<T>>
     where
         T: ParcodeItem,
     {
         let payload = self.read_raw()?;
 
-        // Fallback path for small vectors or leaves:
         if payload.len() < 8 {
             let mut cursor = std::io::Cursor::new(payload.as_ref());
             let children = self.children()?;
@@ -711,7 +708,6 @@ impl<'a> ChunkNode<'a> {
             return T::read_slice_from_shard(&mut cursor, &mut child_iter);
         }
 
-        // 1. Parse metadata from header
         let total_items = usize::try_from(u64::from_le_bytes(
             payload
                 .get(0..8)
@@ -720,13 +716,14 @@ impl<'a> ChunkNode<'a> {
                 .map_err(|_| ParcodeError::Format("Failed to read total_items".into()))?,
         ))
         .map_err(|_| ParcodeError::Format("total_items exceeds usize range".into()))?;
+
         let runs_data = payload.get(8..).unwrap_or(&[]);
         let shard_runs: Vec<ShardRun> =
             bincode::serde::decode_from_slice(runs_data, bincode::config::standard())
                 .map(|(obj, _)| obj)
                 .map_err(|e| ParcodeError::Serialization(e.to_string()))?;
 
-        // 2. Expand RLE into explicit shard jobs
+        // 2. Expand RLE into explicit shard jobs.
         let mut shard_jobs = Vec::with_capacity(self.child_count as usize);
         let mut current_shard_idx = 0;
         let mut current_global_idx: usize = 0;
@@ -739,7 +736,7 @@ impl<'a> ChunkNode<'a> {
                         "Integer overflow in RLE calculation".into(),
                     ));
                 }
-                shard_jobs.push((current_shard_idx, current_global_idx));
+                shard_jobs.push((current_shard_idx, current_global_idx, items_per_shard));
                 current_shard_idx += 1;
                 current_global_idx += items_per_shard;
             }
@@ -759,21 +756,20 @@ impl<'a> ChunkNode<'a> {
         // 3. Allocate uninitialized buffer
         let mut result_buffer: Vec<MaybeUninit<T>> = Vec::with_capacity(total_items);
 
-        // SAFETY: We are creating a "hole" in memory that we PROMISE to fill.
+        // SAFETY: We create a "hole" in memory. We MUST fill every slot before converting to Vec<T>.
         #[allow(unsafe_code)]
         unsafe {
             result_buffer.set_len(total_items);
         }
 
         // 4. Perform parallel stitching
-        // Trick: convert base pointer to `usize` so it can cross thread boundaries.
-        let buffer_base = result_buffer.as_mut_ptr() as usize;
+        // SAFETY: Cast pointer to usize to pass it safely to Rayon threads (usize is Send+Sync).
+        // This is safe because threads write to mathematically disjoint regions (start_idx).
+        let buffer_addr = result_buffer.as_mut_ptr() as usize;
 
-        shard_jobs
-            .into_par_iter()
-            .try_for_each(move |(shard_idx, start_idx)| -> Result<()> {
+        shard_jobs.into_par_iter().try_for_each(
+            move |(shard_idx, start_idx, expected_count)| -> Result<()> {
                 let shard_node = self.get_child_by_index(shard_idx)?;
-                // Deserialize shard into a thread-local vector
                 let payload = shard_node.read_raw()?;
                 let mut cursor = std::io::Cursor::new(payload.as_ref());
                 let children = shard_node.children()?;
@@ -782,28 +778,44 @@ impl<'a> ChunkNode<'a> {
                 let items: Vec<T> = T::read_slice_from_shard(&mut cursor, &mut child_iter)?;
                 let count = items.len();
 
+                // CRITICAL SAFETY CHECK:
+                // Verify shard integrity before touching the shared buffer.
+                if count != expected_count {
+                    return Err(ParcodeError::Format(format!(
+                        "Shard integrity error: Expected {} items, found {}",
+                        expected_count, count
+                    )));
+                }
+
                 if start_idx + count > total_items {
                     return Err(ParcodeError::Format(
                         "Shard items overflowed allocated buffer".into(),
                     ));
                 }
 
-                // Prevent double‑free: wrap items so we can take ownership of bits
+                // Prevent double‑free of the source items
                 let src_items = ManuallyDrop::new(items);
 
                 #[allow(unsafe_code)]
                 unsafe {
-                    // Reconstruct pointer. `ptr::add` works on T units.
-                    let dest_ptr = (buffer_base as *mut T).add(start_idx);
+                    // Reconstruct pointers
+                    let dest_base = buffer_addr as *mut MaybeUninit<T>;
+                    let dest_uninit = dest_base.add(start_idx);
+
+                    // Cast MaybeUninit<T> -> T (Layout compatible)
+                    let dest_ptr = dest_uninit as *mut T;
                     let src_ptr = src_items.as_ptr();
 
-                    // Efficient memory copy
+                    // Efficient copy
                     std::ptr::copy_nonoverlapping(src_ptr, dest_ptr, count);
                 }
                 Ok(())
-            })?;
+            },
+        )?;
 
         // 5. Bless the buffer
+        // SAFETY: At this point, try_for_each returned Ok(), so every shard reported
+        // exactly the expected number of items. The buffer is fully initialized.
         #[allow(unsafe_code)]
         let final_vec = unsafe {
             let mut manual_buffer = ManuallyDrop::new(result_buffer);
