@@ -52,6 +52,7 @@ use crate::graph::TaskGraph;
 use crate::io::SeqWriter;
 use crate::reader::{ParcodeNative, ParcodeReader};
 use crate::visitor::ParcodeVisitor;
+use std::io::Write;
 use std::path::Path;
 
 /// The main entry point for configuring and executing Parcode operations.
@@ -388,6 +389,49 @@ impl Parcode {
         let header = GlobalHeader::new(root_child_ref.offset, root_child_ref.length);
         writer.write_all(&header.to_bytes())?;
         writer.flush()?;
+
+        Ok(())
+    }
+
+    /// Serializes an object synchronously (single-threaded).
+    ///
+    /// This method is useful for:
+    /// - Environments where spawning threads is expensive or restricted (WASM, embeddedish).
+    /// - Debugging serialization logic without concurrency noise.
+    /// - Benchmarking vs Parallel implementation.
+    ///
+    /// It uses less memory than `write` because it reuses a single compression buffer.
+    pub fn save_sync<T, P>(path: P, root_object: &T) -> Result<()>
+    where
+        T: ParcodeVisitor, // Note: Sync bound is not strictly required here, but visitor enforces it usually
+        P: AsRef<Path>,
+    {
+        Self::default().write_sync(path, root_object)
+    }
+
+    /// Internal synchronous write implementation.
+    pub fn write_sync<'a, T, P>(&self, path: P, root_object: &'a T) -> Result<()>
+    where
+        T: ParcodeVisitor,
+        P: AsRef<Path>,
+    {
+        let path = path.as_ref();
+        let mut graph = TaskGraph::<'a>::new();
+        root_object.visit(&mut graph, None, None);
+
+        // CREATE WRITER (Not borrowing it later)
+        let writer = SeqWriter::create(path)?;
+        let registry = crate::compression::CompressorRegistry::new();
+
+        // Pass writer by VALUE (move)
+        let root_child_ref = crate::executor::execute_graph_sync(&graph, writer, &registry)?;
+
+        // Simpler approach for this iteration: Open file to append header.
+        // It's a tiny write (26 bytes), overhead is negligible compared to main payload.
+
+        let mut file = std::fs::OpenOptions::new().append(true).open(path)?;
+        let header = GlobalHeader::new(root_child_ref.offset, root_child_ref.length);
+        file.write_all(&header.to_bytes())?;
 
         Ok(())
     }

@@ -12,6 +12,8 @@ use crate::error::{ParcodeError, Result};
 use crate::format::{ChildRef, MetaByte};
 use crate::graph::{Node, TaskGraph};
 use crate::io::SeqWriter;
+use std::io::Seek;
+use std::io::Write;
 
 /// Context shared among all worker threads.
 struct ExecutionContext<'a, 'graph> {
@@ -100,6 +102,126 @@ pub fn execute_graph<'a>(
         .map_err(|_| ParcodeError::Internal("Root result mutex poisoned".into()))?;
 
     (*root_guard).ok_or_else(|| ParcodeError::Internal("Graph execution incomplete".into()))
+}
+
+/// Executes the graph synchronously with aggressive optimizations.
+///
+/// # Optimizations
+/// 1. **Implicit Topology:** Iterates nodes in reverse order (ID descending).
+///    Since `ParcodeVisitor` builds the tree recursively (Parent creates self, then visits children),
+///    children always have higher IDs than parents. Reverse iteration guarantees dependencies are met.
+///    *Benefit:* Eliminates O(N) allocations for dependency tracking and queues.
+///
+/// 2. **Lockless I/O:** Takes ownership of the underlying writer to bypass Mutex overhead.
+///
+/// 3. **Buffer Reuse:** Uses a single, growing buffer for all compression ops.
+pub fn execute_graph_sync<'a>(
+    graph: &TaskGraph<'a>,
+    writer: SeqWriter, // Takes ownership!
+    registry: &CompressorRegistry,
+) -> Result<ChildRef> {
+    // 1. Bypass the Mutex lock. We own the writer now.
+    let mut raw_writer = writer.into_inner()?;
+    let mut current_offset = raw_writer.stream_position()?;
+
+    // 2. Reusable buffer. Start with 128KB to minimize initial reallocs.
+    let mut shared_buffer = Vec::with_capacity(128 * 1024);
+    let mut root_result: Option<ChildRef> = None;
+
+    // 3. Execution Loop: Reverse Iteration (Zero-Alloc Topology)
+    // The nodes are stored in a Vec. Index N is the Child, Index 0 is Root.
+    // Iterating N -> 0 ensures children are processed before parents.
+    let nodes = graph.nodes();
+    for node in nodes.iter().rev() {
+        // --- STEP A: Gather Children Results ---
+        // Even though we are sync, the Node struct uses Mutex for safety.
+        // In this loop, contention is impossible.
+        let completed_children_raw = {
+            let mut guard = node
+                .completed_children
+                .lock()
+                .map_err(|_| ParcodeError::Internal("Node mutex poisoned".into()))?;
+            // TAKE the value to free memory in the node immediately
+            std::mem::take(&mut *guard)
+        };
+
+        // Efficiently unwrap without extra allocations if possible
+        // We can iterate the vector directly.
+        let is_chunkable = !completed_children_raw.is_empty();
+
+        // --- STEP B: Serialize (User logic) ---
+        // Map Option<ChildRef> -> ChildRef
+        // We reconstruct the vector only because execute() signature requires slice.
+        // In a deeper refactor, we would change execute() to take an iterator to avoid this alloc.
+        let children_refs: Vec<ChildRef> = completed_children_raw
+            .into_iter()
+            .map(|opt| opt.ok_or_else(|| ParcodeError::Internal("Missing child result".into())))
+            .collect::<Result<_>>()?;
+
+        let raw_payload = node.job.execute(&children_refs)?;
+
+        // --- STEP C: Compress & Format ---
+        shared_buffer.clear();
+
+        let config = node.job.config();
+        let compressor = registry.get(config.compression_id)?;
+
+        let footer_size = if is_chunkable {
+            (children_refs.len() * ChildRef::SIZE) + 4
+        } else {
+            0
+        };
+
+        // Heuristic reserve
+        shared_buffer.reserve(raw_payload.len() + footer_size + 1);
+
+        // Compress
+        compressor.compress_append(&raw_payload, &mut shared_buffer)?;
+
+        // Footer
+        if is_chunkable {
+            for child in &children_refs {
+                shared_buffer.extend_from_slice(&child.to_bytes());
+            }
+            let count = u32::try_from(children_refs.len()).unwrap_or(u32::MAX);
+            shared_buffer.extend_from_slice(&count.to_le_bytes());
+        }
+
+        // MetaByte
+        let meta = MetaByte::new(is_chunkable, compressor.id());
+        shared_buffer.push(meta.as_u8());
+
+        // --- STEP D: Write to Disk (Lockless) ---
+        raw_writer.write_all(&shared_buffer)?;
+
+        let chunk_len = shared_buffer.len() as u64;
+        let my_ref = ChildRef {
+            offset: current_offset,
+            length: chunk_len,
+        };
+        current_offset += chunk_len;
+
+        // --- STEP E: Propagate to Parent ---
+        if let Some(parent_id) = node.parent {
+            // Note: We are iterating strictly backwards. Parent ID is GUARANTEED
+            // to be smaller than current node.id, so parent is "future" work.
+            let parent_node = graph.get_node(parent_id);
+            let slot = node.parent_slot.expect("Parent set but slot missing");
+
+            // This is the only Mutex usage remaining (registering result).
+            // It's just a memory write, extremely fast.
+            parent_node.register_child_result(slot, my_ref)?;
+        } else {
+            // No parent? Must be root.
+            root_result = Some(my_ref);
+        }
+    }
+
+    // Flush is critical
+    raw_writer.flush()?;
+
+    root_result
+        .ok_or_else(|| ParcodeError::Internal("Graph execution completed but no root found".into()))
 }
 
 /// The worker function executed by Rayon threads.

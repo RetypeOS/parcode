@@ -80,4 +80,14 @@ impl SeqWriter {
         state.writer.flush()?;
         Ok(())
     }
+
+    /// Consumes the `SeqWriter` and returns the inner buffered writer.
+    /// This allows avoiding Mutex locking overhead in synchronous contexts where
+    /// exclusive ownership is guaranteed.
+    pub fn into_inner(self) -> Result<BufWriter<File>> {
+        let state = self.inner.into_inner().map_err(|_| {
+            ParcodeError::Internal("Writer mutex poisoned during consumption".into())
+        })?;
+        Ok(state.writer)
+    }
 }
