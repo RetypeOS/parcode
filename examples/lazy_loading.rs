@@ -1,36 +1,37 @@
 //! Demostrates lazy and granular access to complex structures.
 //! Run: cargo run --example `lazy_loading`
 
-#![allow(missing_docs)]
-
 use parcode::{Parcode, ParcodeObject, ParcodeReader};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use tempfile::NamedTempFile;
 
-/// Asset with chunkable data
+/// Asset with chunkable data.
 #[derive(Serialize, Deserialize, Clone, ParcodeObject)]
 struct BigAsset {
-    /// Asset ID
+    /// Asset ID.
     id: u32,
-    /// Raw data
+    /// Raw data, stored in a separate chunk.
     #[parcode(chunkable)]
     data: Vec<u8>,
 }
 
+/// The game world containing assets.
 #[derive(Serialize, Deserialize, Clone, ParcodeObject)]
 struct GameWorld {
-    /// Name of the world
+    /// Name of the world.
     world_name: String,
 
-    /// Skybox asset
+    /// Skybox asset, stored as a separate chunk.
     #[parcode(chunkable)]
     skybox: BigAsset,
 
-    /// Terrain asset
+    /// Terrain asset, stored as a separate chunk.
     #[parcode(chunkable)]
     terrain: BigAsset,
 }
+
+/// Main entry point for the example.
 fn main() -> parcode::Result<()> {
     println!("--- Parcode Lazy Loading Example ---");
     // 1. Generate Data

@@ -35,148 +35,207 @@ We invented a technique we call **"Native Mirroring"**. By simply adding `#[deri
 | **Refactoring** | Manual sync across files | **IDE Rename / Refactor** |
 | **Developer Experience** | Foreign | **Native** |
 
-### How it works
+## Installation
 
-You define your data naturally:
+Add this to your `Cargo.toml`:
 
-```rust
-#[derive(ParcodeObject)]
-struct Level {
-    name: String,
-    #[parcode(chunkable)]
-    physics: PhysicsData, // Heavy struct
-}
+```toml
+[dependencies]
+parcode = "0.4.0"
 ```
 
-Parcode's macro engine automatically generates a **Shadow Type** (`LevelLazy`) that mirrors your structure but replaces heavy fields with **Smart Promises**.
+To enable LZ4 compression:
 
-* When you call `reader.read_lazy::<Level>()`, you don't get a `Level`.
-* You get a `LevelLazy` handle.
-* Accessing `level_lazy.name` is instant (read from header).
-* Accessing `level_lazy.physics` returns a **Promise**, not data.
-* Only calling `.load()` triggers the disk I/O.
-
-**Result:** The performance of a database with the ergonomics of a standard `struct`.
+```toml
+[dependencies]
+parcode = { version = "0.4.0", features = ["lz4_flex"] }
+```
 
 ---
 
-## The Principal Feature: Lazy Mirrors
+## Usage Guide
 
-The problem with standard serialization is **"All or Nothing"**. To read `level.config.name`, you usually have to deserialize the entire 500MB `level` file.
+### 1. Define your Data
 
-**Parcode V3 solves this.** By simply adding `#[derive(ParcodeObject)]`, the library generates a "Shadow Mirror" of your struct. You can traverse this mirror instantly—only metadata is read—and trigger disk I/O only when you actually request the data.
-
-### Example
+Use `#[derive(ParcodeObject)]` and the `#[parcode(...)]` attributes to tell the engine how to shard your data.
 
 ```rust
-use parcode::{Parcode, ParcodeObject, ParcodeReader};
+use parcode::ParcodeObject; // Use ParcodeObject trait to enable lazy procedural macros
 use serde::{Serialize, Deserialize};
+use std::collections::HashMap;
 
 #[derive(Serialize, Deserialize, ParcodeObject)]
-struct Level {
-    id: u32,               // Local field (Metadata)
-    name: String,          // Local field (Metadata)
+struct GameWorld {
+    id: u64,               // Stored Inline (Metadata)
+    name: String,          // Stored Inline (Metadata)
 
     #[parcode(chunkable)]  // Stored in a separate, compressed chunk
-    config: LevelConfig,
+    settings: WorldSettings,
 
-    #[parcode(chunkable)]  // Large collection (sharded automatically)
-    assets: Vec<u8>, 
+    #[parcode(chunkable)]  // Automatically sharded into parallel chunks
+    terrain: Vec<u8>, 
+    
+    #[parcode(map)]        // Hash-sharded for O(1) lookups
+    players: HashMap<String, Player>,
 }
 
-#[derive(Serialize, Deserialize, ParcodeObject)]
-struct LevelConfig {
-    version: u8,
+#[derive(Serialize, Deserialize, ParcodeObject, Clone)]
+struct WorldSettings {
+    difficulty: u8,
     #[parcode(chunkable)]
-    metadata: String,      // Deeply nested chunk
+    history: Vec<String>,
 }
 
-fn main() -> parcode::Result<()> {
-    // 1. Open the file (Instant operation, mmaps the content)
-    let reader = ParcodeReader::open("level.par")?;
-
-    // 2. Get the Lazy Mirror (Instant operation, reads only the header)
-    let level_lazy = reader.read_lazy::<Level>()?;
-
-    // 3. Access local fields directly (Already in memory)
-    println!("ID: {}, Name: {}", level_lazy.id, level_lazy.name);
-
-    // 4. Navigate deep without loading!
-    // 'config' is a Mirror. Accessing it costs 0 I/O.
-    // 'version' is a local field of config. Accessing it costs 0 I/O (eager header load).
-    println!("Config Version: {}", level_lazy.config.version);
-
-    // 5. Surgical Load
-    // Only NOW do we touch the disk to load the specific 'metadata' chunk.
-    // The 2GB 'assets' vector is NEVER loaded.
-    let meta = level_lazy.config.metadata.load()?;
-    println!("Deep Metadata: {}", meta);
-
-    Ok(())
+#[derive(Serialize, Deserialize, ParcodeObject, Clone)]
+struct Player {
+    level: u32,
+    #[parcode(chunkable)]
+    inventory: Vec<u32>, // Heavy data
 }
 ```
 
-This architecture allows "Cold Starts" in **microseconds**, regardless of the file size.
+### 2. Save Data
 
----
+You have two ways to save data: Simple and Configured.
 
-## O(1) Map Access: The "Database" Mode
-
-Storing a `HashMap` usually means serializing it as a single huge blob. If you need one user from a 1GB user database, you have to read 1GB.
-
-Parcode introduces **Hash Sharding**. By marking a map with `#[parcode(map)]`, the library automatically:
-
-1. Distributes items into buckets based on their hash.
-2. Writes each bucket as an independent chunk with a "Micro-Index" (Structure of Arrays).
-3. Allows **O(1) retrieval** by reading only the relevant ~4KB shard.
+**A. Simple Save (Default Settings)**
+Perfect for quick prototyping.
 
 ```rust
-#[derive(Serialize, Deserialize, ParcodeObject)]
-struct UserDatabase {
-    // Standard Mode: Good for small maps or full scans.
-    #[parcode(chunkable)] 
-    settings: HashMap<String, String>,
+use parcode::Parcode;
 
-    // Database Mode: Essential for large datasets (O(1) lookup).
-    #[parcode(map)]
-    users: HashMap<u64, UserProfile>, 
+let world = GameWorld { /* ... */ };
+
+// Saves with parallelism enabled, no compression
+Parcode::save("savegame.par", &world)?;
+```
+
+**B. Configured Save (Production)**
+Use the builder to enable compression or write to arbitrary streams.
+
+```rust
+// Saves with LZ4 compression enabled
+Parcode::builder()
+    .compression(true)
+    .write("savegame_compressed.par", &world)?;
+```
+
+### 3. Read Data (Lazy)
+
+Here is where the magic happens. We don't load the object; we load a **Mirror**.
+
+```rust
+use parcode::ParcodeReader;
+
+// 1. Open the file (Instant, uses mmap)
+let reader = ParcodeReader::open("savegame.par")?;
+
+// 2. Get the Lazy Mirror (Instant, reads only header)
+// Note: We get 'GameWorldLazy', a generated shadow struct.
+let world_mirror = reader.read_lazy::<GameWorld>()?;
+
+// 3. Access local fields directly (Already in memory)
+println!("World ID: {}", world_mirror.id);
+
+// 4. Navigate hierarchy without I/O
+// 'settings' is a mirror. Accessing it costs nothing.
+// 'difficulty' is inline. Accessing it costs nothing.
+println!("Difficulty: {}", world_mirror.settings.difficulty);
+
+// 5. Surgical Load
+// Only NOW do we touch disk to load the history vector.
+// The massive 'terrain' vector is NEVER loaded.
+let history = world_mirror.settings.history.load()?;
+```
+
+### 4. Advanced Access Patterns
+
+#### O(1) Map Lookup
+
+Retrieve a single user from a million-user database without loading the database.
+
+```rust
+// .get() returns a full object
+// .get_lazy() returns a Mirror of the object!
+
+if let Some(player_mirror) = world_mirror.players.get_lazy(&"Hero123".to_string())? {
+    // Access player metadata instantly
+    println!("Player Level: {}", player_mirror.level);
+    
+    // Only load inventory if needed
+    let inv = player_mirror.inventory.load()?;
 }
+```
 
-// Usage
-let db = reader.read_lazy::<UserDatabase>()?;
+#### Lazy Vector Iteration
 
-// Retrieves ONE user. 
-// Cost: ~40µs. RAM Usage: ~50KB.
-// The other 999,999 users are never touched.
-let user = db.users.get(&88888)?.expect("User not found");
+Scan a list of heavy objects without loading their heavy payloads.
+
+```rust
+// Assume we have Vec<Player>
+for player_proxy in world_mirror.all_players.iter()? {
+    let p = player_proxy?; // Resolve result
+    
+    // We can check level WITHOUT loading the player's inventory from disk!
+    if p.level > 50 {
+        println!("High level player found!");
+        // p.inventory.load()?; 
+    }
+}
 ```
 
 ---
 
-## Generic I/O: In-Memory & Network
+## Advanced Features
 
- Parcode isn't limited to files. You can serialize directly to any `std::io::Write` destination.
+### Generic I/O: Write to Memory/Network
 
-### Writing to a Memory Buffer
+Parcode isn't limited to files. You can serialize directly to any `std::io::Write` destination.
 
- ```rust
- let mut buffer = Vec::new();
- 
- // Serialize directly to RAM
- Parcode::builder()
-     .compression(true)
-     .write_to_writer(&mut buffer, &my_data)?;
- 
- // 'buffer' now contains the full Parcode file structure
- ```
+```rust
+let mut buffer = Vec::new();
 
- This is perfect for:
+// Serialize directly to RAM
+Parcode::builder()
+    .compression(true)
+    .write_to_writer(&mut buffer, &my_data)?;
 
-* Sending complex object graphs over the network.
-* Caching serialized states in Redis/Memcached.
-* Inter-process communication.
+// 'buffer' now contains the full Parcode file structure
+```
 
- ---
+### Synchronous Mode
+
+For environments where threading is not available (WASM, embedded) or to reduce memory overhead.
+
+```rust
+Parcode::builder()
+    .compression(true)
+    .write_sync("sync_save.par", &data)?;
+```
+
+### Forensic Inspector
+
+Parcode includes tools to analyze the structure of your files without deserializing them.
+
+```rust
+use parcode::inspector::ParcodeInspector;
+
+let report = ParcodeInspector::inspect("savegame.par")?;
+println!("{}", report);
+```
+
+**Output:**
+
+```text
+=== PARCODE INSPECTOR REPORT ===
+Root Offset:    550368
+[GRAPH LAYOUT]
+└── [Generic Container] Size: 1b | Algo: None | Children: 2
+    ├── [Vec Container] Size: 13b | Algo: LZ4 | Children: 32 [Vec<50000> items] 
+    └── [Map Container] Size: 4b | Algo: None | Children: 4 [Hashtable with 4 buckets]
+```
+
+---
 
 ## Macro Attributes Reference
 
@@ -184,25 +243,16 @@ Control exactly how your data structure maps to disk using `#[parcode(...)]`.
 
 | Attribute | Effect | Best For |
 | :--- | :--- | :--- |
-| **(none)** | Field is serialized into the parent's payload. | Small primitives (`u32`, `bool`), short Strings, flags. Access is instant if parent is loaded. |
-| `#[parcode(chunkable)]` | Field is stored in its own independent Chunk (node). | Large structs, vectors, or fields you want to load lazily (`.load()`). |
-| `#[parcode(map)]` | Field (`HashMap`) is sharded by hash. | Large Dictionaries/Indices where you need random access by key (`.get()`). |
-| `#[parcode(compression="lz4")]` | Overrides compression for this specific field/chunk. | Highly compressible data (text, save states). Requires `lz4_flex` feature. |
-
-### Smart Defaults
-
-Parcode is adaptive.
-
-* **Small Vectors:** If a `Vec` marked `chunkable` is tiny (< 4KB), Parcode may inline it or merge chunks to avoid overhead.
-* **Small Maps:** If a `HashMap` marked `map` has few items (< 200), Parcode automatically falls back to standard serialization to save space.
+| **(none)** | Field is serialized into the parent's payload. | Small primitives (`u32`, `bool`), short Strings, flags. |
+| `#[parcode(chunkable)]` | Field is stored in its own independent Chunk. | Structs, Vectors, or fields you want to load lazily (`.load()`). |
+| `#[parcode(map)]` | Field (`HashMap`) is sharded by hash. | Large Dictionaries/Indices where you need random access (`.get()`). |
+| `#[parcode(compression="lz4")]` | Overrides compression for this chunk. | Highly compressible data (text, save states). |
 
 ---
 
 ## Benchmarks vs The World
 
-We benchmarked Parcode V3 against `bincode` (the Rust standard for raw speed) and `sled` (an embedded DB) in a complex game world scenario involving heavy assets (100MB) and metadata lookups.
-
-> **Scenario:** Cold Start of an application reading a massive World State file.
+> **Scenario:** Cold Start of an application reading a massive World State file (100MB+).
 
 | Operation | Tool | Time | Memory (Peak) | Notes |
 | :--- | :--- | :--- | :--- | :--- |
@@ -211,64 +261,13 @@ We benchmarked Parcode V3 against `bincode` (the Rust standard for raw speed) an
 | **Deep Fetch** (Load 1 asset) | **Parcode** | **3.20 ms** | **3.8 MB** | Loads only the target 1MB chunk. |
 | | Bincode | 97.47 ms | 30 MB | Same cost as full load. |
 | **Map Lookup** (Find user by ID) | **Parcode** | **0.02 ms** | **0 MB** | **4000x Faster**. Hash Sharding win. |
-| | Bincode | 97.47 ms | 30 MB | O(N) scan. |
-| **Write Speed** (Throughput) | **Parcode** | ~73 ms | 48 MB | Slightly slower due to graph building (Depending of dataset data). |
-| | Bincode | ~50 ms | 0.01 MB | Faster but produces monolithic blobs. |
 
 *Benchmarks run on NVMe SSD. Parallel throughput scales with cores.*
 
 ---
 
-## Real-World Scenario: Heavy Game Assets
-
-Benchmarks are useful, but how does it feel in a real application?
-We simulated a Game Engine loading a World State containing two **50MB binary assets** (Skybox and Terrain) plus metadata.
-
-> **Test:** Write to disk, restart application, read metadata (World Name), and load *only* the Skybox.
-> *Note: Compression disabled to measure pure architectural efficiency.*
-
-| Operation | Parcode | Bincode | Comparison |
-| :--- | :--- | :--- | :--- |
-| **Save World** (Write) | **3.37 s** | 8.88 s | **2.6x Faster** (Parallel Writes) |
-| **Start Up** (Read Metadata) | **358 µs** | 10.84 s | **~30,000x Faster** (Lazy vs Full) |
-| **Load Skybox** (Partial) | 1.33 s | N/A | Granular loading |
-| **Total Workflow** | **4.70 s** | 19.72 s | **4.2x Faster** |
-
-**The User Experience Difference:**
-
-* **With Bincode:** The user stares at a frozen loading screen for **10.8 seconds** just to see the level name. Memory usage spikes to load assets that might not even be visible yet.
-* **With Parcode:** The application opens **instantly (<1ms)**. The UI populates immediately. The 50MB Skybox streams in smoothly over 1.3 seconds. The Terrain is never loaded if the user doesn't look at it.
-
----
-
-## Architecture Under the Hood
-
-Parcode treats your data as a **Dependency Graph**, not a byte stream.
-
-1. **Zero-Copy Write:** The serializer "borrows" your data (`&[T]`) instead of cloning it. It builds a graph of `ChunkNode`s representing your struct hierarchy.
-2. **Parallel Execution:** Writing is orchestrated by a graph executor. Independent nodes (chunks) are serialized, compressed, and written to disk concurrently.
-3. **Physical Layout:** The file format (`.pcode` v4) places children before parents ("Bottom-Up"). This allows the Root Node at the end of the file to contain a table of contents for the entire structure.
-4. **Lazy Mirroring:** The `ParcodeObject` macro generates a "Mirror Struct" that holds `ChunkNode` handles instead of data. Accessing `mirror.field` simply returns another Mirror or a Promise, incurring zero I/O cost until the final `.load()`.
-
-## Installation
-
-Add this to your `Cargo.toml`:
-
-```toml
-[dependencies]
-parcode = "0.3.1"
-```
-
-To enable LZ4 compression:
-
-```toml
-[dependencies]
-parcode = { version = "0.3.1", features = ["lz4_flex"] }
-```
-
 ## License
 
 This project is licensed under the [MIT license](LICENSE).
 
----
 *Built for the Rust community by RetypeOS.*

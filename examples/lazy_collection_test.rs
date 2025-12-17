@@ -1,23 +1,27 @@
 //! Verification test for .`get_lazy()` on collections.
 
-#![allow(missing_docs)]
-
 use parcode::{Parcode, ParcodeObject, ParcodeReader};
 use serde::{Deserialize, Serialize};
 
+/// A heavy item that contains a large data payload.
 #[derive(Serialize, Deserialize, ParcodeObject, Debug, Clone)]
 struct HeavyItem {
+    /// Unique identifier for the item.
     id: u32,
+    /// Large data payload, stored in a separate chunk.
     #[parcode(chunkable)]
     data: Vec<u8>,
 }
 
+/// A container for a list of heavy items.
 #[derive(Serialize, Deserialize, ParcodeObject, Debug)]
 struct Container {
+    /// List of items, stored as a chunkable collection.
     #[parcode(chunkable)]
     items: Vec<HeavyItem>,
 }
 
+/// Main entry point for the example.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = "lazy_collection_test.par";
 

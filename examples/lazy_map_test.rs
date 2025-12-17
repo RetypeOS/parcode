@@ -1,25 +1,30 @@
 //! Verification test for .`get_lazy()` on `HashMaps`.
 
-#![allow(missing_docs)]
-
 use parcode::{Parcode, ParcodeObject, ParcodeReader};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// A user profile with a heavy bio field.
 #[derive(Serialize, Deserialize, ParcodeObject, Debug, Clone)]
 struct UserProfile {
+    /// User ID.
     id: u64,
+    /// User name.
     name: String,
+    /// User biography, stored in a separate chunk.
     #[parcode(chunkable)]
     bio: String, // Heavy field
 }
 
+/// A database of users.
 #[derive(Serialize, Deserialize, ParcodeObject, Debug)]
 struct UserDatabase {
+    /// Map of users, sharded for O(1) access.
     #[parcode(map)]
     users: HashMap<u64, UserProfile>,
 }
 
+/// Main entry point for the example.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = "lazy_map_test.par";
 

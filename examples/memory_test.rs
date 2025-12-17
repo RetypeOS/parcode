@@ -2,7 +2,6 @@
 //!
 //! Run with: cargo run --example `memory_test` --release --features `lz4_flex`
 
-#![allow(missing_docs)]
 #![allow(unsafe_code)]
 
 use parcode::{
@@ -84,13 +83,17 @@ static ALLOCATOR: ProfilingAllocator<System> = ProfilingAllocator::new(System);
 // 2. DATA STRUCTURES
 // ============================================================================
 
+/// A complex item with multiple fields to simulate real-world data.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug, parcode::ParcodeObject)]
 struct ComplexItem {
+    /// Unique identifier.
     id: u64,
+    /// Item name.
     name: String,
-    // Simulates binary blobs (textures, buffers)
+    /// Simulates binary blobs (textures, buffers).
     #[serde(with = "serde_bytes")]
     payload: Vec<u8>,
+    /// Metadata tags.
     tags: HashMap<String, String>,
 }
 
@@ -98,6 +101,7 @@ struct ComplexItem {
 // Simulates usage of #[parcode(compression="lz4")] on a field.
 // This wrapper forces LZ4 on the underlying data.
 
+/// Wrapper to force LZ4 compression on the inner value.
 struct Lz4Compressed<T>(pub T);
 
 impl<T: ParcodeVisitor> ParcodeVisitor for Lz4Compressed<T> {
@@ -126,6 +130,7 @@ impl<T: ParcodeVisitor> ParcodeVisitor for Lz4Compressed<T> {
 // 3. GENERATOR
 // ============================================================================
 
+/// Generates a dataset of complex items.
 fn generate_dataset(count: usize) -> Vec<ComplexItem> {
     print!(" -> Generating {} items... ", count);
     let start = Instant::now();
@@ -151,6 +156,7 @@ fn generate_dataset(count: usize) -> Vec<ComplexItem> {
 // 4. MAIN BENCHMARK
 // ============================================================================
 
+/// Main entry point for the memory benchmark.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     const ITEM_COUNT: usize = 200_000;
     // Approx size: 200k * ~600 bytes = ~120 MB raw data

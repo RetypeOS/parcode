@@ -383,9 +383,9 @@ fn generate_lazy_mirror(
         let assign_remotes = remotes.iter().map(|f| {
             let n = &f.ident;
             let t = &f.ty;
-            // This handles nested Vecs or nested Structs correctly.
             quote! {
-                let #n = <#t as parcode::rt::ParcodeLazyRef<'a>>::read_lazy_from_stream(reader, child_iter)?;
+                let child_node = child_iter.next().ok_or_else(|| parcode::ParcodeError::Format(format!("Missing child node for field '{}'", stringify!(#n))))?;
+                let #n = <#t as parcode::rt::ParcodeLazyRef<'a>>::create_lazy(child_node)?;
             }
         });
 
@@ -407,6 +407,7 @@ fn generate_lazy_mirror(
 
     quote! {
         #[derive(Debug)]
+        #[allow(missing_docs)]
         pub struct #lazy_name<'a> {
             #(#lazy_fields_def,)*
             _marker: std::marker::PhantomData<&'a ()>,

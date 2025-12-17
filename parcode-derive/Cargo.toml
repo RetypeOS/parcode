@@ -1,6 +1,6 @@
 [package]
 name = "parcode-derive"
-version = "0.1.0"
+version = "0.4.0"
 edition = "2024"
 authors = ["RetypeOS"]
 description = "Procedural macros for the Parcode high-performance serialization library."
