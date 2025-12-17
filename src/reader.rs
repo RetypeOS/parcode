@@ -956,6 +956,33 @@ impl<'a> ChunkNode<'a> {
         }
         Err(ParcodeError::Format("Index out of bounds".into()))
     }
+
+    /// Returns the absolute file offset of this chunk.
+    pub fn offset(&self) -> u64 {
+        self.offset
+    }
+
+    /// Returns the total physical length of this chunk.
+    pub fn length(&self) -> u64 {
+        self.length
+    }
+
+    /// Returns the number of children.
+    pub fn child_count(&self) -> u32 {
+        self.child_count
+    }
+
+    /// Returns the metadata flags.
+    pub fn meta(&self) -> crate::format::MetaByte {
+        self.meta
+    }
+
+    /// Calculates the size of the payload (excluding metadata/footer).
+    pub fn payload_len(&self) -> u64 {
+        // payload_end_offset is calculated in get_chunk, usually:
+        // offset + (payload_end - offset)
+        self.payload_end_offset - self.offset
+    }
 }
 
 // --- STREAMING ITERATOR ---

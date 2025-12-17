@@ -163,6 +163,7 @@ pub mod api;
 pub mod compression;
 pub mod error;
 pub mod format;
+pub mod inspector;
 pub mod reader;
 pub mod visitor;
 
