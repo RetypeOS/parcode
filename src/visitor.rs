@@ -83,13 +83,26 @@
 //!
 //! ## Example Implementation
 //!
-//! ```rust,ignore
+//! ```rust
 //! use parcode::visitor::ParcodeVisitor;
-//! use parcode::graph::TaskGraph;
+//! use parcode::graph::{TaskGraph, ChunkId, JobConfig, SerializationJob};
+//! use parcode::format::ChildRef;
+//! use parcode::error::Result;
+//! use serde::Serialize;
 //!
+//! #[derive(Serialize)]
 //! struct MyStruct {
 //!     local_field: i32,      // Inlined
 //!     remote_field: Vec<u8>, // Chunkable (separate node)
+//! }
+//!
+//! #[derive(Clone)]
+//! struct MyStructJob<'a> { data: &'a MyStruct }
+//! impl<'a> SerializationJob<'a> for MyStructJob<'a> {
+//!     fn execute(&self, _: &[ChildRef]) -> Result<Vec<u8>> {
+//!         Ok(parcode::internal::bincode::serde::encode_to_vec(&self.data.local_field, parcode::internal::bincode::config::standard()).unwrap())
+//!     }
+//!     fn estimated_size(&self) -> usize { 4 }
 //! }
 //!
 //! impl ParcodeVisitor for MyStruct {
@@ -110,8 +123,6 @@
 //!         // Return a job that serializes local_field
 //!         Box::new(MyStructJob { data: self })
 //!     }
-//!     
-//!     // ... other methods
 //! }
 //! ```
 
@@ -165,7 +176,11 @@ pub trait ParcodeVisitor {
     ///
     /// ## Example
     ///
-    /// ```rust,ignore
+    /// ```rust
+    /// use parcode::graph::TaskGraph;
+    /// use parcode::visitor::ParcodeVisitor;
+    ///
+    /// let my_object = vec![1, 2, 3];
     /// let mut graph = TaskGraph::new();
     /// my_object.visit(&mut graph, None, None); // Root object, no parent
     /// ```
@@ -221,12 +236,20 @@ pub trait ParcodeVisitor {
     ///
     /// ## Example
     ///
-    /// ```rust,ignore
-    /// // For a struct with local and remote fields:
-    /// fn serialize_shallow<W: std::io::Write>(&self, writer: &mut W) -> Result<()> {
-    ///     // Only serialize local fields
-    ///     bincode::serialize_into(writer, &self.local_field)?;
-    ///     Ok(())
+    /// ```rust
+    /// use parcode::error::Result;
+    /// use serde::Serialize;
+    ///
+    /// #[derive(Serialize)]
+    /// struct MyStruct { local_field: i32 }
+    ///
+    /// impl MyStruct {
+    ///     // For a struct with local and remote fields:
+    ///     fn serialize_shallow<W: std::io::Write>(&self, writer: &mut W) -> Result<()> {
+    ///         // Only serialize local fields
+    ///         parcode::internal::bincode::serde::encode_into_std_write(&self.local_field, writer, parcode::internal::bincode::config::standard()).map_err(|e| parcode::ParcodeError::Serialization(e.to_string()))?;
+    ///         Ok(())
+    ///     }
     /// }
     /// ```
     fn serialize_shallow<W: std::io::Write>(&self, writer: &mut W) -> crate::error::Result<()>
@@ -309,11 +332,18 @@ pub trait ParcodeVisitor {
     ///
     /// ## Example
     ///
-    /// ```rust,ignore
-    /// // For a struct with a chunkable field:
-    /// fn visit_inlined<'a>(&'a self, graph: &mut TaskGraph<'a>, parent_id: ChunkId, config: Option<JobConfig>) {
-    ///     // Visit remote children and link them to parent_id
-    ///     self.remote_field.visit(graph, Some(parent_id), None);
+    /// ```rust
+    /// use parcode::visitor::ParcodeVisitor;
+    /// use parcode::graph::{TaskGraph, ChunkId, JobConfig};
+    ///
+    /// struct MyStruct { remote_field: Vec<u8> }
+    ///
+    /// impl MyStruct {
+    ///     // For a struct with a chunkable field:
+    ///     fn visit_inlined<'a>(&'a self, graph: &mut TaskGraph<'a>, parent_id: ChunkId, config: Option<JobConfig>) {
+    ///         // Visit remote children and link them to parent_id
+    ///         self.remote_field.visit(graph, Some(parent_id), None);
+    ///     }
     /// }
     /// ```
     ///

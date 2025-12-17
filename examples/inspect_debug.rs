@@ -56,7 +56,6 @@ fn main() -> parcode::Result<()> {
         level_1_vec: Vec<Wrapper>,
     }
 
-    // CORRECCIÓN AQUI: Typo 'CLone' corregido a 'Clone' y añadido Clone
     #[derive(Serialize, Deserialize, ParcodeObject, PartialEq, Debug, Clone)]
     struct Wrapper {
         id: u32,
@@ -64,7 +63,6 @@ fn main() -> parcode::Result<()> {
         level_2_map: HashMap<String, DeepBlob>,
     }
 
-    // CORRECCIÓN AQUI: Añadido Clone (Requerido por HashMap)
     #[derive(Serialize, Deserialize, ParcodeObject, PartialEq, Debug, Clone)]
     struct DeepBlob {
         #[parcode(chunkable)]

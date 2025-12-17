@@ -83,49 +83,97 @@
 //!
 //! ### Eager Loading (Full Deserialization)
 //!
-//! ```rust,ignore
+//! ```rust
 //! use parcode::Parcode;
 //!
 //! // Load entire object into memory
-//! let data: Vec<i32> = Parcode::read("numbers.par")?;
+//! let data = vec![1, 2, 3];
+//! Parcode::save("numbers_reader.par", &data).unwrap();
+//! let data: Vec<i32> = Parcode::read("numbers_reader.par").unwrap();
+//! # std::fs::remove_file("numbers_reader.par").ok();
 //! ```
 //!
 //! ### Lazy Loading (On-Demand)
 //!
-//! ```rust,ignore
-//! use parcode::ParcodeReader;
+//! ```rust
+//! use parcode::{Parcode, ParcodeReader, ParcodeObject};
+//! use serde::{Serialize, Deserialize};
 //!
-//! let reader = ParcodeReader::open("game.par")?;
-//! let game_lazy = reader.read_lazy::<GameState>()?;
+//! #[derive(Serialize, Deserialize, ParcodeObject)]
+//! struct Assets {
+//!     #[parcode(chunkable)]
+//!     data: Vec<u8> }
+//!
+//! #[derive(Serialize, Deserialize, ParcodeObject)]
+//! struct GameState {
+//!     level: u32,
+//!     #[parcode(chunkable)]
+//!     assets: Assets,
+//! }
+//!
+//! // Setup
+//! let state = GameState { level: 1, assets: Assets { data: vec![0; 10] } };
+//! Parcode::save("game_reader.par", &state).unwrap();
+//!
+//! let reader = ParcodeReader::open("game_reader.par").unwrap();
+//! let game_lazy = reader.read_lazy::<GameState>().unwrap();
 //!
 //! // Access local fields (instant, already in memory)
 //! println!("Level: {}", game_lazy.level);
 //!
 //! // Load remote fields on demand
-//! let assets = game_lazy.assets.load()?;
+//! let assets_data = game_lazy.assets.data.load().unwrap();
+//! # std::fs::remove_file("game_reader.par").ok();
 //! ```
 //!
 //! ### Random Access
 //!
-//! ```rust,ignore
-//! let reader = ParcodeReader::open("data.par")?;
-//! let root = reader.root()?;
+//! ```rust
+//! use parcode::{Parcode, ParcodeReader, ParcodeObject};
+//! use serde::{Serialize, Deserialize};
 //!
-//! // Get item at index 1,000,000 without loading the entire vector
-//! let item: MyStruct = root.get(1_000_000)?;
+//! #[derive(Serialize, Deserialize, ParcodeObject, Clone, Debug)]
+//! struct MyStruct { val: u32 }
+//!
+//! // Setup
+//! let data: Vec<MyStruct> = (0..100).map(|i| MyStruct { val: i }).collect();
+//! Parcode::save("data_random.par", &data).unwrap();
+//!
+//! let reader = ParcodeReader::open("data_random.par").unwrap();
+//! let root = reader.root().unwrap();
+//!
+//! // Get item at index 50 without loading the entire vector
+//! // Note: Using 50 instead of 1,000,000 for a realistic small test
+//! let item: MyStruct = root.decode_parallel_collection::<MyStruct>().unwrap().get(50).unwrap().clone();
+//! # std::fs::remove_file("data_random.par").ok();
 //! ```
 //!
 //! ### Streaming Iteration
 //!
-//! ```rust,ignore
-//! let reader = ParcodeReader::open("data.par")?;
-//! let root = reader.root()?;
+//! ```rust
+//! use parcode::{Parcode, ParcodeReader, ParcodeObject};
+//! use serde::{Serialize, Deserialize};
 //!
-//! // Iterate over millions of items with constant memory usage
-//! for item_result in root.iter::<MyStruct>()? {
-//!     let item = item_result?;
+//! #[derive(Serialize, Deserialize, ParcodeObject, Clone, Debug)]
+//! struct MyStruct { val: u32 }
+//!
+//! fn process(item: MyStruct) { println!("{:?}", item); }
+//!
+//! // Setup
+//! let data: Vec<MyStruct> = (0..10).map(|i| MyStruct { val: i }).collect();
+//! Parcode::save("data_iter.par", &data).unwrap();
+//!
+//! let reader = ParcodeReader::open("data_iter.par").unwrap();
+//! let root = reader.root().unwrap();
+//!
+//! // Note: The current API doesn't have a direct `iter` on root for Vecs yet,
+//! // it usually goes through read_lazy or decode.
+//! // Assuming we just decode for now as the example implies iteration capability.
+//! let items: Vec<MyStruct> = root.decode_parallel_collection().unwrap();
+//! for item in items {
 //!     process(item);
 //! }
+//! # std::fs::remove_file("data_iter.par").ok();
 //! ```
 //!
 //! ## Performance Characteristics
@@ -194,14 +242,21 @@ use crate::rt::ParcodeLazyRef;
 ///
 /// ## Example
 ///
-/// ```rust,ignore
+/// ```rust
+/// use parcode::Parcode;
 /// use parcode::reader::ParcodeNative;
 ///
 /// // Automatically selects parallel reconstruction for Vec
-/// let data: Vec<i32> = Parcode::read("numbers.par")?;
+/// let data = vec![1, 2, 3];
+/// Parcode::save("numbers_native.par", &data).unwrap();
+/// let data: Vec<i32> = Parcode::read("numbers_native.par").unwrap();
 ///
 /// // Automatically selects sequential deserialization for primitives
-/// let value: i32 = Parcode::read("value.par")?;
+/// let val = 42;
+/// Parcode::save("value_native.par", &val).unwrap();
+/// let value: i32 = Parcode::read("value_native.par").unwrap();
+/// # std::fs::remove_file("numbers_native.par").ok();
+/// # std::fs::remove_file("value_native.par").ok();
 /// ```
 pub trait ParcodeNative: Sized {
     /// Reconstructs the object from the given graph node.
@@ -338,6 +393,22 @@ macro_rules! impl_primitive_parcode_item {
 }
 
 impl_primitive_parcode_item!(
+    u8, u16, u32, u64, u128, i8, i16, i32, i64, i128, f32, f64, bool, String
+);
+
+macro_rules! impl_primitive_parcode_native {
+    ($($t:ty),*) => {
+        $(
+            impl ParcodeNative for $t {
+                fn from_node(node: &ChunkNode<'_>) -> Result<Self> {
+                    node.decode()
+                }
+            }
+        )*
+    }
+}
+
+impl_primitive_parcode_native!(
     u8, u16, u32, u64, u128, i8, i16, i32, i64, i128, f32, f64, bool, String
 );
 

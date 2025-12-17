@@ -19,34 +19,37 @@ use std::sync::Mutex;
 /// before triggering a syscall.
 const WRITE_BUFFER_SIZE: usize = 16 * 1024 * 1024;
 
-/// A thread-safe, buffered sequential writer.
+/// A thread-safe, buffered sequential writer generic over any `Write` implementation.
 ///
 /// This writer is designed to be shared across multiple threads (via `Mutex`)
 /// to allow concurrent graph execution to serialize data, while ensuring
-/// that the actual disk writes happen sequentially and efficiently.
+/// that the actual writes happen sequentially and efficiently.
+///
+/// It supports writing to:
+/// - Files (`File`)
+/// - Memory Buffers (`Vec<u8>`)
+/// - Network Streams (`TcpStream`)
+/// - Standard Output (`Stdout`)
 #[derive(Debug)]
-pub struct SeqWriter {
-    inner: Mutex<WriterState>,
+pub struct SeqWriter<W: Write> {
+    inner: Mutex<WriterState<W>>,
 }
 
 #[derive(Debug)]
-struct WriterState {
-    writer: BufWriter<File>,
+struct WriterState<W: Write> {
+    writer: BufWriter<W>,
     current_offset: u64,
 }
 
-impl SeqWriter {
-    /// Opens the file with an optimized buffer configuration.
-    ///
-    /// The file is created (truncated if it exists) and wrapped in a large `BufWriter`.
-    pub fn create(path: &Path) -> Result<Self> {
-        let file = File::create(path)?;
-        Ok(Self {
+impl<W: Write + Send> SeqWriter<W> {
+    /// Wraps any Writer (File, Vec<u8>, `TcpStream`) in a buffered sequential writer.
+    pub fn new(writer: W) -> Self {
+        Self {
             inner: Mutex::new(WriterState {
-                writer: BufWriter::with_capacity(WRITE_BUFFER_SIZE, file),
+                writer: BufWriter::with_capacity(WRITE_BUFFER_SIZE, writer),
                 current_offset: 0,
             }),
-        })
+        }
     }
 
     /// Writes a chunk of data atomically to the file sequence.
@@ -84,10 +87,20 @@ impl SeqWriter {
     /// Consumes the `SeqWriter` and returns the inner buffered writer.
     /// This allows avoiding Mutex locking overhead in synchronous contexts where
     /// exclusive ownership is guaranteed.
-    pub fn into_inner(self) -> Result<BufWriter<File>> {
+    pub fn into_inner(self) -> Result<BufWriter<W>> {
         let state = self.inner.into_inner().map_err(|_| {
             ParcodeError::Internal("Writer mutex poisoned during consumption".into())
         })?;
         Ok(state.writer)
+    }
+}
+
+impl SeqWriter<File> {
+    /// Opens the file with an optimized buffer configuration.
+    ///
+    /// The file is created (truncated if it exists) and wrapped in a large `BufWriter`.
+    pub fn create(path: &Path) -> Result<Self> {
+        let file = File::create(path)?;
+        Ok(Self::new(file))
     }
 }

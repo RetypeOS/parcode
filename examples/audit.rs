@@ -244,38 +244,6 @@ fn main() -> parcode::Result<()> {
     // Parcode: Navigate Graph
     ALLOCATOR.reset();
     let t_start = Instant::now();
-    // 1. Get Region 5 Proxy (LazyCollection::get devuelve Region)
-    let _region = lazy_world.regions.get(5)?;
-    // 2. Region struct has 'zones' field which is LazyCollection<Zone> created via macro?
-    // Wait, `Region` struct is: #[parcode(chunkable)] zones: Vec<Zone>.
-    // The macro generated `RegionLazy` containing `zones: LazyCollection<Zone>`.
-    // BUT `lazy_world.regions.get(5)` returns a `Region` (the full struct), NOT `RegionLazy`.
-    // Why? Because `LazyCollection::get` returns `T` (deserialized).
-    //
-    // TO ACHIEVE TRUE DEEP LAZY:
-    // We should not deserialize `Region`. We want a `RegionLazy`.
-    // Current Implementation limitation: `LazyCollection<T>` deserializes T.
-    // If T is `Region`, it deserializes `Region`.
-    // Since `Region` has `zones` as chunkable, deserializing `Region` DOES NOT load `zones` data!
-    // It only loads the `ChildRef` pointing to `zones`.
-    // So `Region` is lightweight! It contains a `Vec` which the visitor implementation
-    // reconstructs?
-    // NO. If `Region` implements `ParcodeNative`, `from_node` will trigger.
-    // Inside `from_node` for Region, `zones` (remote) calls `Vec::from_node`.
-    // `Vec::from_node` loads the whole vector.
-    //
-    // AHA! To support deep lazy traversal, `LazyCollection::get` should ideally allow returning
-    // a Lazy version if available. But currently returns `T`.
-    //
-    // HOWEVER: Even if it loads `Region`, does it load the content of `zones`?
-    // Yes, standard `ParcodeNative` is recursive eager.
-    //
-    // TRUCO: Parcode is optimized. `Region` struct contains `Vec<Zone>`.
-    // If we load `Region`, we load `Vec<Zone>`. `Zone` contains `Vec<u8>`.
-    // Loading `Vec<Zone>` loads all zones.
-    // This implies Test 3 will load Region 5 completely.
-    // Compared to Bincode (Loaded EVERYTHING), it's still a win.
-
     let region_val = lazy_world.regions.get(5)?; // Loads Region 5 + All its Zones
     let zone_val = region_val.zones.get(20).expect("Zone not found");
     let byte = *zone_val.terrain_data.first().expect("Terrain data empty");

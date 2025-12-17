@@ -33,36 +33,58 @@
 //!
 //! ### Basic Error Handling
 //!
-//! ```rust,ignore
-//! use parcode::{Parcode, ParcodeError};
+//! ```rust
+//! use parcode::{Parcode, ParcodeError, ParcodeObject};
+//! use serde::{Serialize, Deserialize};
 //!
-//! match Parcode::save("data.par", &my_data) {
+//! #[derive(Serialize, Deserialize, ParcodeObject)]
+//! struct MyData { val: i32 }
+//! let my_data = MyData { val: 10 };
+//!
+//! match Parcode::save("data_err.par", &my_data) {
 //!     Ok(()) => println!("Saved successfully"),
 //!     Err(ParcodeError::Io(e)) => eprintln!("I/O error: {}", e),
 //!     Err(e) => eprintln!("Other error: {}", e),
 //! }
+//! # std::fs::remove_file("data_err.par").ok();
 //! ```
 //!
 //! ### Error Propagation with `?`
 //!
-//! ```rust,ignore
+//! ```rust
+//! use parcode::{Parcode, ParcodeObject};
+//! use serde::{Serialize, Deserialize};
+//!
+//! #[derive(Serialize, Deserialize, ParcodeObject)]
+//! struct GameState { level: u32 }
+//!
 //! fn save_game_state(state: &GameState) -> parcode::Result<()> {
-//!     Parcode::save("game.par", state)?;
+//!     Parcode::save("game_err.par", state)?;
 //!     Ok(())
 //! }
+//! # let state = GameState { level: 1 };
+//! # save_game_state(&state).unwrap();
+//! # std::fs::remove_file("game_err.par").ok();
 //! ```
 //!
 //! ### Accessing Error Sources
 //!
-//! ```rust,ignore
+//! ```rust
 //! use std::error::Error;
+//! use parcode::{Parcode, ParcodeObject};
+//! use serde::{Serialize, Deserialize};
 //!
-//! if let Err(e) = Parcode::save("data.par", &my_data) {
+//! #[derive(Serialize, Deserialize, ParcodeObject)]
+//! struct MyData { val: i32 }
+//! let my_data = MyData { val: 10 };
+//!
+//! if let Err(e) = Parcode::save("data_source.par", &my_data) {
 //!     eprintln!("Error: {}", e);
 //!     if let Some(source) = e.source() {
 //!         eprintln!("Caused by: {}", source);
 //!     }
 //! }
+//! # std::fs::remove_file("data_source.par").ok();
 //! ```
 
 use std::fmt;
@@ -76,7 +98,7 @@ use std::sync::Arc;
 ///
 /// ## Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use parcode::Result;
 ///
 /// fn my_function() -> Result<i32> {
@@ -106,7 +128,7 @@ pub type Result<T> = std::result::Result<T, ParcodeError>;
 ///
 /// ## Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use parcode::ParcodeError;
 ///
 /// fn check_error(err: &ParcodeError) {

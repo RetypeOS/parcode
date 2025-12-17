@@ -323,7 +323,7 @@ where
         let is_map_optimized = config_override.map(|c| c.is_map).unwrap_or(false);
         let total_items = self.len();
 
-        if !is_map_optimized || total_items < 200 {
+        if !is_map_optimized {
             // Standard Strategy: Single blob.
             // If parent_id is None, we are root -> Create node.
             // If parent_id is Some, we are a chunkable child -> Create node and link.
@@ -360,7 +360,11 @@ where
         // We limit to 256 shards by default to avoid exploding the graph for huge maps
         // (although the format supports more).
         let target_items_per_bucket = 2000;
-        let num_shards = (total_items / target_items_per_bucket).clamp(1, 1024);
+        let num_shards = if total_items == 0 {
+            0
+        } else {
+            (total_items / target_items_per_bucket).clamp(1, 1024)
+        };
 
         // Phase 1: Distribution (Bucketing)
         // Collect references (&K, &V) to avoid cloning memory.
@@ -394,9 +398,9 @@ where
         // Shard Nodes
         for bucket in buckets {
             // Optimization: Don't create empty shards
-            if bucket.is_empty() {
-                continue;
-            }
+            // if bucket.is_empty() {
+            //     continue;
+            // }
 
             let shard_inner = Box::new(MapShardJob { items: bucket });
 

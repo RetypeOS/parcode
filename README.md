@@ -153,6 +153,31 @@ let user = db.users.get(&88888)?.expect("User not found");
 
 ---
 
+## Generic I/O: In-Memory & Network
+
+ Parcode isn't limited to files. You can serialize directly to any `std::io::Write` destination.
+
+### Writing to a Memory Buffer
+
+ ```rust
+ let mut buffer = Vec::new();
+ 
+ // Serialize directly to RAM
+ Parcode::builder()
+     .compression(true)
+     .write_to_writer(&mut buffer, &my_data)?;
+ 
+ // 'buffer' now contains the full Parcode file structure
+ ```
+
+ This is perfect for:
+
+* Sending complex object graphs over the network.
+* Caching serialized states in Redis/Memcached.
+* Inter-process communication.
+
+ ---
+
 ## Macro Attributes Reference
 
 Control exactly how your data structure maps to disk using `#[parcode(...)]`.

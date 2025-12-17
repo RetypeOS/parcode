@@ -26,6 +26,8 @@
 //!     without loading the entire collection.
 //! *   **Streaming/Partial Reads:** Large collections can be iterated over without loading the
 //!     entire dataset into RAM.
+//! *   **Generic I/O:** Serialize to any destination implementing `std::io::Write` (Files, Memory Buffers, Network Streams).
+//! *   **Forensic Inspection:** Built-in tools to analyze the structure of Parcode files without deserializing them.
 //!
 //! ## Architecture
 //!
@@ -71,6 +73,12 @@
 //! It orchestrates the serialization → compression → I/O pipeline, using atomic operations
 //! for lock-free dependency tracking and Rayon for work distribution.
 //!
+//! ### Inspector
+//!
+//! The [`inspector`] module provides tools for forensic analysis of Parcode files. It allows you to
+//! visualize the internal chunk structure, compression ratios, and data distribution without
+//! needing to deserialize the actual payloads.
+//!
 //! ### Reader
 //!
 //! The [`ParcodeReader`] is responsible for memory-mapping the file and reconstructing objects.
@@ -88,9 +96,15 @@
 //!
 //! ### Basic Serialization
 //!
-//! ```rust,ignore
+//! ```rust
 //! use parcode::{Parcode, ParcodeObject};
 //! use serde::{Serialize, Deserialize};
+//!
+//! #[derive(Serialize, Deserialize, ParcodeObject)]
+//! struct PlayerData {
+//!     name: String,
+//!     stats: Vec<u32>,
+//! }
 //!
 //! #[derive(Serialize, Deserialize, ParcodeObject)]
 //! struct GameState {
@@ -101,39 +115,89 @@
 //! }
 //!
 //! // Save
-//! let state = GameState { /* ... */ };
-//! Parcode::save("game.par", &state)?;
+//! let state = GameState {
+//!     level: 1,
+//!     score: 1000,
+//!     player_data: PlayerData {
+//!         name: "Hero".to_string(),
+//!         stats: vec![10, 20, 30],
+//!     },
+//! };
+//! Parcode::save("game_lib.par", &state).unwrap();
 //!
 //! // Load (eager)
-//! let loaded: GameState = Parcode::read("game.par")?;
+//! let loaded: GameState = Parcode::read("game_lib.par").unwrap();
+//! # std::fs::remove_file("game_lib.par").ok();
 //! ```
 //!
 //! ### Lazy Loading
 //!
-//! ```rust,ignore
-//! use parcode::ParcodeReader;
+//! ```rust
+//! use parcode::{Parcode, ParcodeReader, ParcodeObject};
+//! use serde::{Serialize, Deserialize};
 //!
-//! let reader = ParcodeReader::open("game.par")?;
-//! let state_lazy = reader.read_lazy::<GameState>()?;
+//! #[derive(Serialize, Deserialize, ParcodeObject)]
+//! struct PlayerData {
+//!     name: String,
+//!     stats: Vec<u32>,
+//! }
+//!
+//! #[derive(Serialize, Deserialize, ParcodeObject)]
+//! struct GameState {
+//!     level: u32,
+//!     score: u64,
+//!     #[parcode(chunkable)]
+//!     player_data: PlayerData,
+//! }
+//!
+//! // Setup file
+//! let state = GameState {
+//!     level: 1,
+//!     score: 1000,
+//!     player_data: PlayerData {
+//!         name: "Hero".to_string(),
+//!         stats: vec![10, 20, 30],
+//!     },
+//! };
+//! Parcode::save("game_lazy.par", &state).unwrap();
+//!
+//! let reader = ParcodeReader::open("game_lazy.par").unwrap();
+//! let state_lazy = reader.read_lazy::<GameState>().unwrap();
 //!
 //! // Access local fields instantly (already in memory)
 //! println!("Level: {}", state_lazy.level);
 //!
 //! // Load remote fields on-demand
-//! let player = state_lazy.player_data.load()?;
+//! let player_name = state_lazy.player_data.name;
+//! # std::fs::remove_file("game_lazy.par").ok();
 //! ```
 //!
 //! ### `HashMap` Sharding
 //!
-//! ```rust,ignore
-//! #[derive(Serialize, Deserialize, ParcodeObject)]
+//! ```rust
+//! use parcode::{Parcode, ParcodeReader, ParcodeObject};
+//! use serde::{Serialize, Deserialize};
+//! use std::collections::HashMap;
+//!
+//! #[derive(Serialize, Deserialize, ParcodeObject, Clone, Debug)]
+//! struct User { name: String }
+//!
+//! #[derive(Serialize, Deserialize, ParcodeObject, Debug)]
 //! struct Database {
 //!     #[parcode(map)]  // Enable O(1) lookups
 //!     users: HashMap<u64, User>,
 //! }
 //!
-//! let db_lazy = reader.read_lazy::<Database>()?;
-//! let user = db_lazy.users.get(&12345)?.expect("User not found");
+//! // Setup
+//! let mut users = HashMap::new();
+//! users.insert(12345, User { name: "Alice".to_string() });
+//! let db = Database { users };
+//! Parcode::save("db_map.par", &db).unwrap();
+//!
+//! let reader = ParcodeReader::open("db_map.par").unwrap();
+//! let db_lazy = reader.read_lazy::<Database>().unwrap();
+//! let user = db_lazy.users.get(&12345u64).expect("User not found");
+//! # std::fs::remove_file("db_map.par").ok();
 //! ```
 //!
 //! ## Performance Considerations
