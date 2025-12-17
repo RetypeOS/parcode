@@ -918,6 +918,28 @@ impl<'a> ChunkNode<'a> {
         self.len() == 0
     }
 
+    /// Helper internal: Locates the shard node and local index for a global index.
+    /// Used by `ParcodeCollectionPromise::get_lazy`.
+    pub(crate) fn locate_shard_item(&self, index: usize) -> Result<(Self, usize)> {
+        let payload = self.read_raw()?;
+
+        if payload.len() < 8 {
+            return Err(ParcodeError::Format("Invalid container payload".into()));
+        }
+
+        // Skip total_items (8 bytes)
+        let runs_data = payload.get(8..).unwrap_or(&[]);
+        let shard_runs: Vec<ShardRun> =
+            bincode::serde::decode_from_slice(runs_data, bincode::config::standard())
+                .map(|(obj, _)| obj)
+                .map_err(|e| ParcodeError::Serialization(e.to_string()))?;
+
+        let (shard_idx, local_idx) = self.resolve_rle_index(index, &shard_runs)?;
+
+        let shard = self.get_child_by_index(shard_idx)?;
+        Ok((shard, local_idx))
+    }
+
     /// Retrieves item at `index` using RLE arithmetic.
     ///
     /// This calculates which shard holds the item, loads ONLY that shard,

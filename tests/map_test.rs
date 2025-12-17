@@ -13,7 +13,7 @@ struct UserDatabase {
     users: HashMap<String, UserProfile>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, ParcodeObject)]
 struct UserProfile {
     level: u32,
     score: u64,

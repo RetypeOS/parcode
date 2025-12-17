@@ -18,7 +18,6 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::hash::Hash;
-
 // --- TUNING CONSTANTS ---
 
 /// Ideal size for a chunk on disk. Optimized for SSD throughput.
@@ -311,7 +310,8 @@ impl<'a> SerializationJob<'a> for MapContainerJob {
 impl<K, V> ParcodeVisitor for HashMap<K, V>
 where
     K: Serialize + DeserializeOwned + Hash + Eq + Send + Sync + Clone + 'static,
-    V: Serialize + DeserializeOwned + Send + Sync + Clone + 'static,
+    K: Serialize + DeserializeOwned + Hash + Eq + Send + Sync + Clone + 'static,
+    V: Serialize + DeserializeOwned + Send + Sync + Clone + ParcodeVisitor + 'static,
 {
     fn visit<'a>(
         &'a self,
@@ -397,22 +397,31 @@ where
 
         // Shard Nodes
         for bucket in buckets {
-            // Optimization: Don't create empty shards
-            // if bucket.is_empty() {
-            //     continue;
-            // }
+            // 1. Create Placeholder Node (Reserve ID)
+            let child_id = graph.add_node(Box::new(PlaceholderJob));
+            graph.link_parent_child(my_id, child_id);
 
+            // 2. Visit children (Zero-Copy Iteration)
+            // `bucket` is Vec<(&K, &V)>.
+            // .iter() gives references to the tuple: &(&K, &V).
+            // .cloned() copies the tuple (pointers are Copy).
+            // This yields (&K, &V) which lives for 'a, detaching it from the local `bucket`.
+            #[allow(clippy::unnecessary_to_owned)]
+            for (_, v) in bucket.iter().cloned() {
+                v.visit_inlined(graph, child_id, None);
+            }
+
+            // 3. Construct Real Job (Move)
             let shard_inner = Box::new(MapShardJob { items: bucket });
 
-            // Apply the same configuration (compression) to the shards
             let shard_job: Box<dyn SerializationJob<'a> + 'a> = if let Some(cfg) = config_override {
                 Box::new(crate::rt::ConfiguredJob::new(shard_inner, cfg))
             } else {
                 shard_inner
             };
 
-            let child_id = graph.add_node(shard_job);
-            graph.link_parent_child(my_id, child_id);
+            // 4. Swap Placeholder with Real Job (O(1))
+            graph.replace_job(child_id, shard_job);
         }
     }
 
@@ -448,15 +457,29 @@ impl<T: ParcodeVisitor> ParcodeVisitor for &T {
     }
 }
 
+/// PLACEHOLDER
+struct PlaceholderJob;
+impl<'a> SerializationJob<'a> for PlaceholderJob {
+    fn execute(&self, _: &[ChildRef]) -> Result<Vec<u8>> {
+        Err(ParcodeError::Internal(
+            "PlaceholderJob executed! This is a bug.".into(),
+        ))
+    }
+    fn estimated_size(&self) -> usize {
+        0
+    }
+}
+
 /// Macro to implement `ParcodeVisitor` for primitive types massively.
 macro_rules! impl_primitive_visitor {
     ($($t:ty),*) => {
         $(
             impl ParcodeVisitor for $t {
                 fn visit<'a>(&'a self, graph: &mut TaskGraph<'a>, parent_id: Option<ChunkId>, config_override: Option<JobConfig>) {
-                    if parent_id.is_none() {
-                        let job = self.create_job(config_override);
-                        graph.add_node(job);
+                    let job = self.create_job(config_override);
+                    let my_id = graph.add_node(job);
+                    if let Some(pid) = parent_id {
+                        graph.link_parent_child(pid, my_id);
                     }
                 }
 

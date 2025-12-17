@@ -24,6 +24,7 @@
 use crate::error::{ParcodeError, Result};
 use crate::format::ChildRef;
 use crate::graph::SerializationJob;
+use crate::visitor::ParcodeVisitor;
 use serde::Serialize;
 use std::hash::{Hash, Hasher};
 use twox_hash::XxHash64;
@@ -73,7 +74,7 @@ pub struct MapShardJob<'a, K, V> {
 impl<'a, K, V> SerializationJob<'a> for MapShardJob<'a, K, V>
 where
     K: Serialize + Hash + Sync,
-    V: Serialize + Sync,
+    V: Serialize + Sync + ParcodeVisitor,
 {
     fn execute(&self, _: &[ChildRef]) -> Result<Vec<u8>> {
         let count = self.items.len();
@@ -99,8 +100,12 @@ where
 
             // 3. Serialize (K, V) tuple to data blob
             //    Both key and value are stored to enable collision resolution
-            bincode::serde::encode_into_std_write((k, v), &mut cursor, bincode::config::standard())
+            //    We serialize K using standard bincode, and V using serialize_shallow
+            //    to respect chunkable fields.
+            bincode::serde::encode_into_std_write(k, &mut cursor, bincode::config::standard())
                 .map_err(|e| ParcodeError::Serialization(e.to_string()))?;
+
+            v.serialize_shallow(&mut cursor)?;
         }
 
         // 4. Assemble final buffer with proper alignment

@@ -372,8 +372,6 @@ dependencies = [
 [[package]]
 name = "parcode-derive"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e91c04370e7e30f5ca897e7704875bb227469902a9639e5554f3aec115e56f97"
 dependencies = [
  "proc-macro2",
  "quote",

@@ -21,3 +21,5 @@ target
 #.idea/
 Cargo.lock
 parcode.txt
+road.md
+.gitignore

@@ -99,7 +99,7 @@ struct Zone {
     terrain_data: Vec<u8>,
 }
 
-#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, ParcodeObject)]
 struct UserProfile {
     username: String,
     xp: u64,

@@ -8,7 +8,9 @@ use crate::reader::{ChunkNode, ParcodeItem};
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::io::Cursor;
 use std::marker::PhantomData;
+use std::vec::IntoIter;
 
 // --- EXISTING CONFIG WRAPPER ---
 
@@ -58,6 +60,13 @@ pub trait ParcodeLazyRef<'a>: Sized {
 
     /// Creates the lazy view from a graph node.
     fn create_lazy(node: ChunkNode<'a>) -> Result<Self::Lazy>;
+
+    /// Creates the lazy view from a data stream (Inside Vec access).
+    /// This allows scanning headers without full deserialization.
+    fn read_lazy_from_stream(
+        reader: &mut Cursor<&[u8]>,
+        children: &mut IntoIter<ChunkNode<'a>>,
+    ) -> Result<Self::Lazy>;
 }
 
 /// A terminal promise for a single value.
@@ -117,6 +126,41 @@ impl<'a, T: ParcodeItem + Send + Sync + 'a> ParcodeCollectionPromise<'a, T> {
     /// Returns a streaming iterator.
     pub fn iter(&self) -> Result<impl Iterator<Item = Result<T>> + 'a> {
         self.node.clone().iter()
+    }
+}
+
+impl<'a, T> ParcodeCollectionPromise<'a, T>
+where
+    T: ParcodeItem + Send + Sync + ParcodeLazyRef<'a> + 'a,
+{
+    /// Retrieves a Lazy Proxy for the item at `index`.
+    ///
+    /// This allows accessing local fields of the item without triggering the loading
+    /// of its heavy dependencies.
+    pub fn get_lazy(&self, index: usize) -> Result<T::Lazy> {
+        // 1. Resolve shard using internal helper exposed via crate
+        let (shard_node, index_in_shard) = self.node.locate_shard_item(index)?;
+
+        // 2. Prepare readers
+        let payload = shard_node.read_raw()?;
+        let mut cursor = Cursor::new(payload.as_ref());
+        let children_vec = shard_node.children()?;
+        let mut children_iter = children_vec.into_iter();
+
+        // Skip Vector Length (u64)
+        // Shards created by ParcodeVisitor::serialize_slice always have a length prefix.
+        let _len: u64 =
+            bincode::serde::decode_from_std_read(&mut cursor, bincode::config::standard())
+                .map_err(|e| crate::ParcodeError::Serialization(e.to_string()))?;
+
+        // 3. Scan and Skip previous items
+        // We read them as Lazy objects and discard them.
+        for _ in 0..index_in_shard {
+            let _ = T::read_lazy_from_stream(&mut cursor, &mut children_iter)?;
+        }
+
+        // 4. Read the target item as Lazy
+        T::read_lazy_from_stream(&mut cursor, &mut children_iter)
     }
 }
 
@@ -333,6 +377,175 @@ where
     fn create_lazy(node: ChunkNode<'a>) -> Result<Self::Lazy> {
         Ok(ParcodeMapPromise::new(node))
     }
+
+    fn read_lazy_from_stream(
+        _: &mut Cursor<&[u8]>,
+        children: &mut IntoIter<ChunkNode<'a>>,
+    ) -> Result<Self::Lazy> {
+        let child_node = children.next().ok_or_else(|| {
+            crate::ParcodeError::Format("Missing child node for HashMap field".into())
+        })?;
+        Ok(ParcodeMapPromise::new(child_node))
+    }
+}
+
+impl<'a, K, V> ParcodeMapPromise<'a, K, V>
+where
+    K: Hash + Eq + DeserializeOwned + Send + Sync + 'static,
+    V: ParcodeItem + Send + Sync + ParcodeLazyRef<'a> + 'a,
+{
+    /// Performs a lazy lookup for a single key.
+    ///
+    /// This returns a Lazy Mirror of the value, allowing access to its local fields
+    /// without loading its heavy dependencies.
+    pub fn get_lazy(&self, key: &K) -> Result<Option<V::Lazy>> {
+        // 1. Read Container Payload (Num Shards)
+        let container_payload = self.node.read_raw()?;
+        if container_payload.len() < 4 {
+            return Ok(None);
+        } // Empty
+        let num_shards = u32::from_le_bytes(
+            container_payload
+                .get(0..4)
+                .ok_or_else(|| crate::ParcodeError::Format("Payload too short".into()))?
+                .try_into()
+                .map_err(|_| crate::ParcodeError::Format("Failed to read num_shards".into()))?,
+        );
+
+        // 2. Hash & Select Shard
+        let target_hash = crate::map::hash_key(key);
+        let shard_idx = usize::try_from(target_hash).unwrap_or(0) % (num_shards as usize);
+
+        // 3. Load Shard
+        let shard = self.node.get_child_by_index(shard_idx)?;
+        let payload = shard.read_raw()?;
+
+        if payload.len() < 8 {
+            return Ok(None);
+        } // Empty shard
+
+        let count = u32::from_le_bytes(
+            payload
+                .get(0..4)
+                .ok_or_else(|| crate::ParcodeError::Format("Payload too short for count".into()))?
+                .try_into()
+                .map_err(|_| crate::ParcodeError::Format("Failed to read count".into()))?,
+        ) as usize;
+        // Skip 4 bytes padding -> Offset 8
+
+        let hashes_start = 8;
+        let hashes_end = hashes_start + (count * 8);
+        let offsets_start = hashes_end;
+        let data_start = offsets_start + (count * 4);
+
+        // 4. Fast Scan (SIMD Optimized via chunks_exact)
+        let hashes_slice = payload
+            .get(hashes_start..hashes_end)
+            .ok_or_else(|| crate::ParcodeError::Format("Hashes slice out of bounds".into()))?;
+
+        // We need to find the index `i` of the item.
+        let mut target_index = None;
+
+        for (i, chunk) in hashes_slice.chunks_exact(8).enumerate() {
+            let h = u64::from_le_bytes(
+                chunk
+                    .try_into()
+                    .map_err(|_| crate::ParcodeError::Format("Failed to read hash".into()))?,
+            );
+
+            if h == target_hash {
+                // Candidate found. Verify key to handle hash collisions.
+                let offset_bytes = payload
+                    .get(offsets_start + (i * 4)..offsets_start + (i * 4) + 4)
+                    .ok_or_else(|| {
+                        crate::ParcodeError::Format("Offset bytes out of bounds".into())
+                    })?;
+                let offset = u32::from_le_bytes(
+                    offset_bytes
+                        .try_into()
+                        .map_err(|_| crate::ParcodeError::Format("Failed to read offset".into()))?,
+                ) as usize;
+
+                let data_slice = payload.get(data_start + offset..).ok_or_else(|| {
+                    crate::ParcodeError::Format("Data slice out of bounds".into())
+                })?;
+
+                // Deserialize K to check equality
+                // We use decode_from_slice which returns (T, usize)
+                let (stored_key, _): (K, usize) =
+                    bincode::serde::decode_from_slice(data_slice, bincode::config::standard())
+                        .map_err(|e| crate::ParcodeError::Serialization(e.to_string()))?;
+
+                if &stored_key == key {
+                    target_index = Some(i);
+                    break;
+                }
+            }
+        }
+
+        let target_index = match target_index {
+            Some(idx) => idx,
+            None => return Ok(None),
+        };
+
+        // 5. We found the item at `target_index`.
+        // Now we must advance the children iterator to the correct position.
+        // This requires parsing items 0..target_index.
+
+        let children = shard.children()?;
+        let mut child_iter = children.into_iter();
+
+        // Iterate 0..target_index
+        for i in 0..target_index {
+            let offset_bytes = payload
+                .get(offsets_start + (i * 4)..offsets_start + (i * 4) + 4)
+                .ok_or_else(|| crate::ParcodeError::Format("Offset bytes out of bounds".into()))?;
+            let offset = u32::from_le_bytes(
+                offset_bytes
+                    .try_into()
+                    .map_err(|_| crate::ParcodeError::Format("Failed to read offset".into()))?,
+            ) as usize;
+
+            let data_slice = payload
+                .get(data_start + offset..)
+                .ok_or_else(|| crate::ParcodeError::Format("Data slice out of bounds".into()))?;
+
+            let mut cursor = Cursor::new(data_slice);
+
+            // Read K
+            let _: K =
+                bincode::serde::decode_from_std_read(&mut cursor, bincode::config::standard())
+                    .map_err(|e| crate::ParcodeError::Serialization(e.to_string()))?;
+
+            // Read V (Lazy) - this consumes children
+            let _ = V::read_lazy_from_stream(&mut cursor, &mut child_iter)?;
+        }
+
+        // 6. Read the target item
+        let offset_bytes = payload
+            .get(offsets_start + (target_index * 4)..offsets_start + (target_index * 4) + 4)
+            .ok_or_else(|| crate::ParcodeError::Format("Offset bytes out of bounds".into()))?;
+        let offset = u32::from_le_bytes(
+            offset_bytes
+                .try_into()
+                .map_err(|_| crate::ParcodeError::Format("Failed to read offset".into()))?,
+        ) as usize;
+
+        let data_slice = payload
+            .get(data_start + offset..)
+            .ok_or_else(|| crate::ParcodeError::Format("Data slice out of bounds".into()))?;
+
+        let mut cursor = Cursor::new(data_slice);
+
+        // Read K (skip)
+        let _: K = bincode::serde::decode_from_std_read(&mut cursor, bincode::config::standard())
+            .map_err(|e| crate::ParcodeError::Serialization(e.to_string()))?;
+
+        // Read V (Lazy) and return
+        let lazy_val = V::read_lazy_from_stream(&mut cursor, &mut child_iter)?;
+
+        Ok(Some(lazy_val))
+    }
 }
 
 // --- BLANKET IMPLEMENTATIONS FOR PRIMITIVES ---
@@ -344,6 +557,20 @@ macro_rules! impl_lazy_primitive {
                 type Lazy = ParcodePromise<'a, $t>;
                 fn create_lazy(node: ChunkNode<'a>) -> Result<Self::Lazy> {
                     Ok(ParcodePromise::new(node))
+                }
+
+                fn read_lazy_from_stream(
+                    _: &mut Cursor<&[u8]>,
+                    children: &mut IntoIter<ChunkNode<'a>>,
+                ) -> Result<Self::Lazy> {
+                    // If a primitive is accessed via read_lazy_from_stream, it MUST be a chunkable field
+                    // (child node), because inline primitives in a Vec are accessed via .get().
+                    // The macro generates calls to this for fields in `remotes`.
+
+                    let child_node = children.next().ok_or_else(|| {
+                        crate::ParcodeError::Format("Missing child node for chunkable primitive field".into())
+                    })?;
+                    Ok(ParcodePromise::new(child_node))
                 }
             }
         )*
@@ -358,5 +585,20 @@ impl<'a, T: ParcodeItem + Send + Sync + 'static> ParcodeLazyRef<'a> for Vec<T> {
     type Lazy = ParcodeCollectionPromise<'a, T>;
     fn create_lazy(node: ChunkNode<'a>) -> Result<Self::Lazy> {
         Ok(ParcodeCollectionPromise::new(node))
+    }
+
+    fn read_lazy_from_stream(
+        _: &mut Cursor<&[u8]>,
+        children: &mut IntoIter<ChunkNode<'a>>,
+    ) -> Result<Self::Lazy> {
+        // When a Vec<T> is encountered INSIDE another struct's stream (inline),
+        // it means it's a child node reference.
+        // We consume one child node from the iterator and wrap it.
+
+        let child_node = children.next().ok_or_else(|| {
+            crate::ParcodeError::Format("Missing child node for Vec field".into())
+        })?;
+
+        Ok(ParcodeCollectionPromise::new(child_node))
     }
 }

@@ -142,6 +142,22 @@ impl<'a> TaskGraph<'a> {
     pub fn nodes(&self) -> &[Node<'a>] {
         &self.nodes
     }
+
+    /// Replaces the job of a node.
+    ///
+    /// This is used for optimization patterns where a node ID is needed to process
+    /// dependencies (children) before the final job (consuming the data) can be fully constructed.
+    ///
+    /// # Panics
+    /// Panics if the `id` does not exist.
+    pub fn replace_job(&mut self, id: ChunkId, new_job: Box<dyn SerializationJob<'a> + 'a>) {
+        let node_idx = id.as_u32() as usize;
+        let node = self
+            .nodes
+            .get_mut(node_idx)
+            .expect("Node ID out of bounds during job replacement");
+        node.job = new_job;
+    }
 }
 
 // Manual Default impl to avoid restrictive bounds on 'a

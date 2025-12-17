@@ -355,7 +355,7 @@ fn generate_lazy_mirror(
 ) -> proc_macro2::TokenStream {
     let lazy_name = syn::Ident::new(&format!("{}Lazy", name), name.span());
 
-    let lazy_fields = locals
+    let lazy_fields_def = locals
         .iter()
         .map(|f| {
             let n = &f.ident;
@@ -368,37 +368,47 @@ fn generate_lazy_mirror(
             quote! { pub #n: <#t as parcode::rt::ParcodeLazyRef<'a>>::Lazy }
         }));
 
-    let assign_remotes_stmts = remotes.iter().map(|f| {
-        let n = &f.ident;
-        let t = &f.ty;
-        quote! {
-            let child = child_iter.next().ok_or(parcode::ParcodeError::Format("Missing child".into()))?;
-            let #n = <#t as parcode::rt::ParcodeLazyRef<'a>>::create_lazy(child)?;
-        }
-    });
+    // Logic to read from stream (reusable block)
+    let read_logic = {
+        let read_locals = locals.iter().map(|f| {
+            let n = &f.ident;
+            let t = &f.ty;
+            quote! {
+                let #n: #t = parcode::internal::bincode::serde::decode_from_std_read(
+                    &mut reader, parcode::internal::bincode::config::standard()
+                ).map_err(|e| parcode::ParcodeError::Serialization(e.to_string()))?;
+            }
+        });
 
-    let mut field_names = Vec::new();
-    for f in locals {
-        field_names.push(&f.ident);
-    }
-    for f in remotes {
-        field_names.push(&f.ident);
-    }
+        let assign_remotes = remotes.iter().map(|f| {
+            let n = &f.ident;
+            let t = &f.ty;
+            // This handles nested Vecs or nested Structs correctly.
+            quote! {
+                let #n = <#t as parcode::rt::ParcodeLazyRef<'a>>::read_lazy_from_stream(reader, child_iter)?;
+            }
+        });
 
-    let read_locals_stmts = locals.iter().map(|f| {
-        let n = &f.ident;
-        let t = &f.ty;
+        let field_names = locals
+            .iter()
+            .map(|f| &f.ident)
+            .chain(remotes.iter().map(|f| &f.ident));
+
         quote! {
-            let #n: #t = parcode::internal::bincode::serde::decode_from_std_read(
-                &mut reader, parcode::internal::bincode::config::standard()
-            ).map_err(|e| parcode::ParcodeError::Serialization(e.to_string()))?;
+            #(#read_locals)*
+            #(#assign_remotes)*
+
+            Ok(#lazy_name {
+                #(#field_names,)*
+                _marker: std::marker::PhantomData,
+            })
         }
-    });
+    };
 
     quote! {
         #[derive(Debug)]
         pub struct #lazy_name<'a> {
-            #(#lazy_fields,)*
+            #(#lazy_fields_def,)*
             _marker: std::marker::PhantomData<&'a ()>,
         }
 
@@ -407,17 +417,18 @@ fn generate_lazy_mirror(
 
             fn create_lazy(node: parcode::reader::ChunkNode<'a>) -> parcode::Result<Self::Lazy> {
                 let payload = node.read_raw()?;
-                let mut reader = std::io::Cursor::new(payload);
-                #(#read_locals_stmts)*
-
+                let mut reader = std::io::Cursor::new(payload.as_ref());
                 let children = node.children()?;
                 let mut child_iter = children.into_iter();
-                #(#assign_remotes_stmts)*
 
-                Ok(#lazy_name {
-                    #(#field_names,)*
-                    _marker: std::marker::PhantomData,
-                })
+                Self::read_lazy_from_stream(&mut reader, &mut child_iter)
+            }
+
+            fn read_lazy_from_stream(
+                mut reader: &mut std::io::Cursor<&[u8]>,
+                mut child_iter: &mut std::vec::IntoIter<parcode::reader::ChunkNode<'a>>
+            ) -> parcode::Result<Self::Lazy> {
+                #read_logic
             }
         }
     }
