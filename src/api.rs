@@ -18,25 +18,41 @@
 //!
 //! ### Quick Start (Default Settings)
 //!
-//! ```rust,ignore
-//! use parcode::Parcode;
+//! ```rust
+//! use parcode::{Parcode, ParcodeObject};
+//! use serde::{Serialize, Deserialize};
+//!
+//! #[derive(Serialize, Deserialize, ParcodeObject, PartialEq, Debug)]
+//! struct MyType { val: i32 }
+//!
+//! let my_data = MyType { val: 42 };
 //!
 //! // Serialize with default settings (no compression)
-//! Parcode::save("data.par", &my_data)?;
+//! Parcode::save("data_quick.par", &my_data)?;
 //!
 //! // Deserialize
-//! let loaded: MyType = Parcode::read("data.par")?;
+//! let loaded: MyType = Parcode::read("data_quick.par")?;
+//! # std::fs::remove_file("data_quick.par")?;
+//! # Ok::<(), parcode::ParcodeError>(())
 //! ```
 //!
 //! ### Custom Configuration
 //!
-//! ```rust,ignore
-//! use parcode::Parcode;
+//! ```rust
+//! use parcode::{Parcode, ParcodeObject};
+//! use serde::{Serialize, Deserialize};
+//!
+//! #[derive(Serialize, Deserialize, ParcodeObject, PartialEq, Debug)]
+//! struct MyType { val: i32 }
+//!
+//! let my_data = MyType { val: 42 };
 //!
 //! // Enable compression
 //! Parcode::builder()
 //!     .compression(true)
-//!     .write("data.par", &my_data)?;
+//!     .write("data_custom.par", &my_data)?;
+//! # std::fs::remove_file("data_custom.par")?;
+//! # Ok::<(), parcode::ParcodeError>(())
 //! ```
 //!
 //! ## Thread Safety
@@ -71,23 +87,26 @@ use std::path::Path;
 ///
 /// ### Basic Usage
 ///
-/// ```rust,ignore
+/// ```rust
 /// use parcode::Parcode;
 ///
 /// let data = vec![1, 2, 3];
-/// Parcode::save("data.par", &data).unwrap();
-/// let loaded: Vec<i32> = Parcode::read("data.par").unwrap();
+/// Parcode::save("data_basic.par", &data).unwrap();
+/// let loaded: Vec<i32> = Parcode::read("data_basic.par").unwrap();
+/// # std::fs::remove_file("data_basic.par").unwrap();
 /// ```
 ///
 /// ### With Compression
 ///
-/// ```rust,ignore
+/// ```rust
 /// use parcode::Parcode;
 ///
 /// let data = vec![1, 2, 3];
 /// Parcode::builder()
 ///     .compression(true)
-///     .write("data.par", &data)?;
+///     .write("data_comp.par", &data)?;
+/// # std::fs::remove_file("data_comp.par")?;
+/// # Ok::<(), parcode::ParcodeError>(())
 /// ```
 ///
 /// ## Performance Notes
@@ -100,7 +119,7 @@ pub struct Parcode {
     /// Whether to enable compression for serialized chunks.
     ///
     /// When `true`, the default compression algorithm will be used. The actual algorithm
-    /// depends on enabled features (LZ4 if `lz4_flex` is enabled).
+    /// depends on enabled features (LZ4 if `lz4_flex` is enabled, otherwise no compression).
     use_compression: bool,
 }
 
@@ -116,7 +135,7 @@ impl Parcode {
     ///
     /// ## Examples
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use parcode::Parcode;
     ///
     /// let parcode = Parcode::builder()
@@ -155,20 +174,27 @@ impl Parcode {
     ///
     /// ## Examples
     ///
-    /// ```rust,ignore
-    /// use parcode::Parcode;
+    /// ```rust
+    /// use parcode::{Parcode, ParcodeObject};
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Serialize, Deserialize, ParcodeObject)]
+    /// struct MyData { val: i32 }
+    /// let my_data = MyData { val: 42 };
     ///
     /// // Enable compression
     /// Parcode::builder()
     ///     .compression(true)
     ///     .write("data.par", &my_data)?;
+    /// # std::fs::remove_file("data.par")?;
+    /// # Ok::<(), parcode::ParcodeError>(())
     /// ```
     ///
     /// ## Performance Notes
     ///
-    /// LZ4 compression typically achieves 2-3x compression ratios on structured data
-    /// with minimal CPU overhead. For data that doesn't compress well (e.g., already
-    /// compressed images), the overhead may outweigh the benefits.
+    /// - LZ4 compression typically achieves 2-3x compression ratios on structured data
+    ///   with minimal CPU overhead. For data that doesn't compress well (e.g., already
+    ///   compressed images), the overhead may outweigh the benefits.
     pub fn compression(mut self, enable: bool) -> Self {
         self.use_compression = enable;
         self
@@ -208,24 +234,28 @@ impl Parcode {
     ///
     /// ## Examples
     ///
-    /// ```rust,ignore
-    /// use parcode::Parcode;
+    /// ```rust
+    /// use parcode::{Parcode, ParcodeObject};
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Serialize, Deserialize, ParcodeObject)]
+    /// struct GameState { level: u32 }
+    ///
+    /// // Setup
+    /// let data = vec![1, 2, 3];
+    /// Parcode::save("numbers_read.par", &data)?;
+    /// let state = GameState { level: 1 };
+    /// Parcode::save("game_read.par", &state)?;
     ///
     /// // Read a vector
-    /// let data: Vec<i32> = Parcode::read("numbers.par")?;
+    /// let data: Vec<i32> = Parcode::read("numbers_read.par")?;
     ///
     /// // Read a custom struct
-    /// let state: GameState = Parcode::read("game.par")?;
+    /// let state: GameState = Parcode::read("game_read.par")?;
+    /// # std::fs::remove_file("numbers_read.par")?;
+    /// # std::fs::remove_file("game_read.par")?;
+    /// # Ok::<(), parcode::ParcodeError>(())
     /// ```
-    ///
-    /// ## Performance
-    ///
-    /// - **Memory Mapping:** The file is memory-mapped, so the OS handles paging
-    /// - **Parallel Reconstruction:** Collections are reconstructed in parallel
-    /// - **Memory Usage:** The entire object is loaded into memory
-    ///
-    /// For large files where you don't need the entire object, consider using
-    /// [`ParcodeReader::read_lazy`](crate::ParcodeReader::read_lazy) instead.
     pub fn read<T, P>(path: P) -> Result<T>
     where
         T: ParcodeNative,
@@ -241,11 +271,7 @@ impl Parcode {
     /// Saves an object to a file using default settings (no compression).
     ///
     /// This is a convenience method that creates a default `Parcode` instance and calls
-    /// [`write`](Self::write). It's equivalent to:
-    ///
-    /// ```rust,ignore
-    /// Parcode::default().write(path, root_object)
-    /// ```
+    /// [`write`](Self::write).
     ///
     /// ## Type Parameters
     ///
@@ -272,17 +298,19 @@ impl Parcode {
     ///
     /// ## Examples
     ///
-    /// ```rust,ignore
-    /// use parcode::Parcode;
+    /// ```rust
+    /// use parcode::{Parcode, ParcodeObject};
     /// use serde::{Serialize, Deserialize};
     ///
-    /// #[derive(Serialize, Deserialize)]
+    /// #[derive(Serialize, Deserialize, ParcodeObject)]
     /// struct MyData {
     ///     value: i32,
     /// }
     ///
     /// let data = MyData { value: 42 };
-    /// Parcode::save("data.par", &data)?;
+    /// Parcode::save("data_save.par", &data)?;
+    /// # std::fs::remove_file("data_save.par")?;
+    /// # Ok::<(), parcode::ParcodeError>(())
     /// ```
     ///
     /// ## Performance
@@ -293,10 +321,14 @@ impl Parcode {
     ///
     /// For custom configuration (e.g., enabling compression), use the builder pattern:
     ///
-    /// ```rust,ignore
+    /// ```rust
+    /// use parcode::Parcode;
+    /// let data = vec![1, 2, 3];
     /// Parcode::builder()
     ///     .compression(true)
-    ///     .write("data.par", &data)?;
+    ///     .write("data_builder.par", &data)?;
+    /// # std::fs::remove_file("data_builder.par")?;
+    /// # Ok::<(), parcode::ParcodeError>(())
     /// ```
     pub fn save<T, P>(path: P, root_object: &T) -> Result<()>
     where
@@ -346,7 +378,7 @@ impl Parcode {
     ///
     /// ## Examples
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use parcode::Parcode;
     ///
     /// let data = vec![1, 2, 3, 4, 5];
@@ -354,7 +386,9 @@ impl Parcode {
     /// // Write with compression
     /// Parcode::builder()
     ///     .compression(true)
-    ///     .write("data.par", &data)?;
+    ///     .write("data_write.par", &data)?;
+    /// # std::fs::remove_file("data_write.par")?;
+    /// # Ok::<(), parcode::ParcodeError>(())
     /// ```
     ///
     /// ## Performance Characteristics
@@ -365,30 +399,99 @@ impl Parcode {
     /// - **I/O:** Buffered writes (16MB buffer) minimize syscalls
     /// - **Compression:** LZ4 compression adds ~10-20% CPU overhead but can reduce I/O by 2-3x
     ///
-    /// ## Thread Safety
+    /// Serializes an object graph to disk with the configured settings.
     ///
-    /// This method is thread-safe. Multiple threads can call `write` concurrently on different
-    /// `Parcode` instances without interference. The internal writer uses a mutex to serialize
-    /// I/O operations.
-    pub fn write<'a, T, P>(&self, path: P, root_object: &'a T) -> Result<()>
+    /// This is a convenience wrapper around `write_to_writer` that handles file creation.
+    ///
+    /// ## Type Parameters
+    ///
+    /// - `T`: The type to serialize. Must implement [`ParcodeVisitor`]
+    ///   and `Sync` (for parallel execution).
+    /// - `P`: The path type (anything that implements `AsRef<Path>`).
+    ///
+    /// ## Parameters
+    ///
+    /// - `path`: The file path to write to. If the file exists, it will be truncated.
+    /// - `root_object`: A reference to the object to serialize.
+    pub fn write<T, P>(&self, path: P, root_object: &T) -> Result<()>
     where
         T: ParcodeVisitor + Sync,
         P: AsRef<Path>,
     {
-        let path = path.as_ref();
-        // The graph is tied to lifetime 'a of root_object
-        let mut graph = TaskGraph::<'a>::new();
+        let file = std::fs::File::create(path)?;
+        self.write_to_writer(file, root_object)
+    }
 
+    /// Serializes the object graph to a generic writer (File, Vec<u8>, `TcpStream`, etc).
+    ///
+    /// This method performs the complete serialization pipeline:
+    ///
+    /// 1. **Graph Construction:** Analyzes the object structure and builds a dependency graph
+    /// 2. **Parallel Execution:** Processes independent chunks concurrently using Rayon
+    /// 3. **Compression:** Applies compression to each chunk (if enabled)
+    /// 4. **I/O:** Writes chunks to the writer in a bottom-up order
+    /// 5. **Header Writing:** Appends the global header pointing to the root chunk
+    ///
+    /// ## Type Parameters
+    ///
+    /// - `'a`: The lifetime of the object being serialized. The graph borrows from the object,
+    ///   enabling zero-copy serialization.
+    ///
+    /// ## Thread Safety
+    ///
+    /// - `T`: The type to serialize. Must implement [`ParcodeVisitor`] + `Sync`.
+    /// - `W`: The writer type. Must implement `Write` + `Send`.
+    ///
+    /// ## Parameters
+    ///
+    /// - `writer`: The destination to write to.
+    /// - `root_object`: A reference to the object to serialize.
+    ///
+    /// ## Returns
+    ///
+    /// Returns `Ok(())` on success.
+    ///
+    /// ## Errors
+    ///
+    /// This method can fail if:
+    ///
+    /// - Serialization fails (e.g., bincode error)
+    /// - Compression fails
+    /// - I/O errors occur during writing to the `writer`
+    ///
+    /// ## Examples
+    ///
+    /// ```rust
+    /// use parcode::Parcode;
+    ///
+    /// let data = vec![1, 2, 3];
+    /// let mut buffer = Vec::new();
+    ///
+    /// Parcode::builder()
+    ///     .write_to_writer(&mut buffer, &data)?;
+    /// # Ok::<(), parcode::ParcodeError>(())
+    /// ```
+    pub fn write_to_writer<'a, T, W>(&self, writer: W, root_object: &'a T) -> Result<()>
+    where
+        T: ParcodeVisitor + Sync,
+        W: Write + Send,
+    {
+        // 1. Build the Task Graph (Virtual)
+        let mut graph = TaskGraph::<'a>::new();
+        // The root has no parent (None) and no slot (None).
         root_object.visit(&mut graph, None, None);
 
-        let writer = SeqWriter::create(path)?;
+        // 2. Prepare the Writer
+        let seq_writer = SeqWriter::new(writer);
+
+        // 3. Execute the Graph (Parallel)
         let registry = crate::compression::CompressorRegistry::new();
+        let root_child_ref = execute_graph(&graph, &seq_writer, &registry)?;
 
-        let root_child_ref = execute_graph(&graph, &writer, &registry)?;
-
+        // 4. Write Global Header
         let header = GlobalHeader::new(root_child_ref.offset, root_child_ref.length);
-        writer.write_all(&header.to_bytes())?;
-        writer.flush()?;
+        seq_writer.write_all(&header.to_bytes())?;
+        seq_writer.flush()?;
 
         Ok(())
     }
@@ -403,13 +506,17 @@ impl Parcode {
     /// It uses less memory than `write` because it reuses a single compression buffer.
     pub fn save_sync<T, P>(path: P, root_object: &T) -> Result<()>
     where
-        T: ParcodeVisitor, // Note: Sync bound is not strictly required here, but visitor enforces it usually
+        T: ParcodeVisitor,
         P: AsRef<Path>,
     {
         Self::default().write_sync(path, root_object)
     }
 
     /// Internal synchronous write implementation.
+    ///
+    /// Currently only supports file paths because `execute_graph_sync` consumes the writer,
+    /// and we need to re-open the file to append the header (simplest approach for now).
+    /// A future refactor could support generic writers for sync mode if needed.
     pub fn write_sync<'a, T, P>(&self, path: P, root_object: &'a T) -> Result<()>
     where
         T: ParcodeVisitor,
@@ -428,7 +535,6 @@ impl Parcode {
 
         // Simpler approach for this iteration: Open file to append header.
         // It's a tiny write (26 bytes), overhead is negligible compared to main payload.
-
         let mut file = std::fs::OpenOptions::new().append(true).open(path)?;
         let header = GlobalHeader::new(root_child_ref.offset, root_child_ref.length);
         file.write_all(&header.to_bytes())?;

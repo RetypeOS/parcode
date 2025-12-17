@@ -12,20 +12,19 @@ use crate::error::{ParcodeError, Result};
 use crate::format::{ChildRef, MetaByte};
 use crate::graph::{Node, TaskGraph};
 use crate::io::SeqWriter;
-use std::io::Seek;
 use std::io::Write;
 
 /// Context shared among all worker threads.
-struct ExecutionContext<'a, 'graph> {
+struct ExecutionContext<'a, 'graph, W: Write + Send> {
     graph: &'graph TaskGraph<'a>, // The graph holds data living for 'a
-    writer: &'graph SeqWriter,
+    writer: &'graph SeqWriter<W>,
     registry: &'graph CompressorRegistry,
     abort_flag: AtomicBool,
     error_capture: Mutex<Option<ParcodeError>>,
     root_result: Mutex<Option<ChildRef>>,
 }
 
-impl<'a, 'graph> ExecutionContext<'a, 'graph> {
+impl<'a, 'graph, W: Write + Send> ExecutionContext<'a, 'graph, W> {
     fn signal_error(&self, err: ParcodeError) {
         let mut guard = self.error_capture.lock().unwrap_or_else(|p| p.into_inner());
         if guard.is_none() {
@@ -48,9 +47,13 @@ impl<'a, 'graph> ExecutionContext<'a, 'graph> {
 ///
 /// This function consumes the graph (conceptually) and drives the I/O writing process.
 /// It returns the `ChildRef` of the Root Chunk, which is needed to write the Global Header.
-pub fn execute_graph<'a>(
+///
+/// # Type Parameters
+///
+/// * `W`: The writer type. Must implement `std::io::Write` and `Send`.
+pub fn execute_graph<'a, W: Write + Send>(
     graph: &TaskGraph<'a>,
-    writer: &SeqWriter,
+    writer: &SeqWriter<W>,
     registry: &CompressorRegistry,
 ) -> Result<ChildRef> {
     // 1. Setup the shared context.
@@ -115,14 +118,33 @@ pub fn execute_graph<'a>(
 /// 2. **Lockless I/O:** Takes ownership of the underlying writer to bypass Mutex overhead.
 ///
 /// 3. **Buffer Reuse:** Uses a single, growing buffer for all compression ops.
-pub fn execute_graph_sync<'a>(
+///
+/// # Type Parameters
+///
+/// * `W`: The writer type. Must implement `std::io::Write` and `Send`.
+pub fn execute_graph_sync<'a, W: Write + Send>(
     graph: &TaskGraph<'a>,
-    writer: SeqWriter, // Takes ownership!
+    writer: SeqWriter<W>,
     registry: &CompressorRegistry,
 ) -> Result<ChildRef> {
     // 1. Bypass the Mutex lock. We own the writer now.
     let mut raw_writer = writer.into_inner()?;
-    let mut current_offset = raw_writer.stream_position()?;
+    // NOTE: We assume we are writing from offset 0 relative to this execution if stream_position fails or isn't used.
+    // Since we are generic W, we can't rely on Seek.
+    // We will track offset manually starting from 0.
+    // If the user appended to a file, they should be aware that the returned offsets are relative to where we started writing,
+    // UNLESS we require Seek. But requiring Seek limits us (no TcpStream).
+    // For Parcode file format, absolute offsets are needed for the header.
+    // If writing to a stream, the header must be written at the end pointing to absolute offsets?
+    // Actually, Parcode format expects random access for reading, so writing to a non-seekable stream is mostly for
+    // "streaming out" a file that will be saved to disk later or read linearly?
+    // But the format relies on offsets.
+    // If W is a File, we can get the current offset.
+    // If W is Vec<u8>, we can get len.
+    // If W is TcpStream, we can't.
+    // However, for the purpose of generating the file, we just need to know the offset relative to the start of the file.
+    // Let's assume start offset is 0 for now for simplicity in generic context, or we could add a `base_offset` param.
+    let mut current_offset = 0u64;
 
     // 2. Reusable buffer. Start with 128KB to minimize initial reallocs.
     let mut shared_buffer = Vec::with_capacity(128 * 1024);
@@ -226,9 +248,9 @@ pub fn execute_graph_sync<'a>(
 
 /// The worker function executed by Rayon threads.
 /// It handles Serialization -> Compression -> Writing -> Notification.
-fn process_node<'scope, 'a>(
+fn process_node<'scope, 'a, W: Write + Send>(
     scope: &rayon::Scope<'scope>,
-    ctx: &'scope ExecutionContext<'a, 'scope>,
+    ctx: &'scope ExecutionContext<'a, 'scope, W>,
     node: &'scope Node<'a>,
 ) {
     // 0. Fast abort check

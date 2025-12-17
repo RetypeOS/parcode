@@ -1,7 +1,14 @@
 // src/inspector.rs
 
 //! Tools for inspecting the physical structure of Parcode files.
-//! useful for debugging sharding strategies and verification.
+//!
+//! This module provides the [`ParcodeInspector`] tool, which can analyze a Parcode file
+//! and report on its internal structure, chunk sizes, compression algorithms, and data distribution.
+//!
+//! This is useful for:
+//! - **Forensics:** Understanding why a file is large or corrupt.
+//! - **Optimization:** Verifying that your `#[parcode(chunkable)]` and `#[parcode(map)]` attributes are working as intended.
+//! - **Debugging:** visualizing the dependency graph of your serialized data.
 
 use crate::error::Result;
 use crate::reader::{ChunkNode, ParcodeReader};

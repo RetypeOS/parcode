@@ -58,30 +58,30 @@
 //!
 //! ### Using the Default Registry
 //!
-//! ```rust,ignore
+//! ```rust
 //! use parcode::compression::CompressorRegistry;
 //!
 //! let registry = CompressorRegistry::new();
-//! let compressor = registry.get(0)?; // Get NoCompression
+//! let compressor = registry.get(0).unwrap(); // Get NoCompression
 //! ```
 //!
 //! ### Compressing Data
 //!
-//! ```rust,ignore
+//! ```rust
 //! use parcode::compression::{Compressor, NoCompression};
 //!
 //! let compressor = NoCompression;
 //! let data = b"Hello, world!";
-//! let compressed = compressor.compress(data)?;
+//! let compressed = compressor.compress(data).unwrap();
 //! ```
 //!
 //! ### Registering Custom Compressors
 //!
-//! ```rust,ignore
-//! use parcode::compression::CompressorRegistry;
+//! ```rust
+//! use parcode::compression::{CompressorRegistry, NoCompression};
 //!
 //! let mut registry = CompressorRegistry::new();
-//! // registry.register(Box::new(MyCustomCompressor));
+//! registry.register(Box::new(NoCompression));
 //! ```
 //!
 //! ## Performance Considerations
@@ -133,7 +133,7 @@ const MIN_COMPRESSION_THRESHOLD: usize = 64;
 ///
 /// To add a new compression algorithm:
 ///
-/// ```rust,ignore
+/// ```rust
 /// use parcode::compression::Compressor;
 /// use parcode::Result;
 /// use std::borrow::Cow;
@@ -146,17 +146,17 @@ const MIN_COMPRESSION_THRESHOLD: usize = 64;
 ///     
 ///     fn compress<'a>(&self, data: &'a [u8]) -> Result<Cow<'a, [u8]>> {
 ///         // Implement compression logic
-///         Ok(Cow::Owned(my_compress(data)))
+///         Ok(Cow::Borrowed(data))
 ///     }
 ///     
 ///     fn decompress<'a>(&self, data: &'a [u8]) -> Result<Cow<'a, [u8]>> {
 ///         // Implement decompression logic
-///         Ok(Cow::Owned(my_decompress(data)))
+///         Ok(Cow::Borrowed(data))
 ///     }
 ///     
 ///     fn compress_append(&self, data: &[u8], output: &mut Vec<u8>) -> Result<()> {
 ///         // Implement direct-to-buffer compression
-///         output.extend_from_slice(&my_compress(data));
+///         output.extend_from_slice(data);
 ///         Ok(())
 ///     }
 /// }
