@@ -48,7 +48,7 @@ pub struct ChunkInfo {
     /// Extra info about distribution (e.g., "32 shards").
     pub distribution_info: Option<String>,
     /// Child nodes.
-    pub children: Vec<ChunkInfo>,
+    pub children: Vec<Self>,
 }
 
 /// The Parcode Inspector tool.
