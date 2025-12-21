@@ -1,0 +1,44 @@
+name: Release Library
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetch all history for auto-generated notes
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=${{ github.ref_name }}
+          gh release create "$VERSION" \
+            --title "Release $VERSION" \
+            --generate-notes
+
+      # ========================================================================
+      # FUTURE: PUBLISH TO CRATES.IO
+      # ========================================================================
+      # To enable this, you need to:
+      # 1. Get an API token from https://crates.io/settings/tokens
+      # 2. Add it to GitHub Secrets as CRATES_IO_TOKEN
+      # 3. Uncomment the lines below
+      #
+      # - name: Publish to crates.io
+      #   env:
+      #     CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+      #   run: cargo publish

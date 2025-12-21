@@ -1,0 +1,31 @@
+version: 2
+updates:
+  - package-ecosystem: "cargo" 
+    directory: "/" 
+    schedule:
+      interval: "weekly" 
+      day: "monday"
+    
+    open-pull-requests-limit: 10
+    
+    assignees:
+      - "Retype15"
+      
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    
+    open-pull-requests-limit: 5
+    
+    assignees:
+      - "Retype15"
+      
+    commit-message:
+      prefix: "chore(ci)"
+      include: "scope"
