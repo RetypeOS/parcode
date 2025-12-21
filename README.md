@@ -26,14 +26,14 @@ Most libraries that offer "Lazy Loading" or "Zero-Copy" access (like FlatBuffers
 
 **Parcode changes the game.**
 
-We invented a technique we call **"Native Mirroring"**. By simply adding `#[derive(ParcodeObject)]`, Parcode analyzes your Rust structs at compile time and invisibly generates a **Lazy Mirror** API.
+We invented a technique we call **"Compile-Time Structural Mirroring (CTSM)"**. By simply adding `#[derive(ParcodeObject)]`, Parcode analyzes your Rust structs at compile time and invisibly generates a **Lazy Mirror** API.
 
-| Feature | FlatBuffers / Cap'n Proto | **Parcode** |
-| :--- | :--- | :--- |
-| **Schema Definition** | External IDL files (`.fbs`) | **Standard Rust Structs** |
-| **Build Process** | Requires external CLI (`flatc`) | **Standard `cargo build`** |
-| **Refactoring** | Manual sync across files | **IDE Rename / Refactor** |
-| **Developer Experience** | Foreign | **Native** |
+|          Feature         |    FlatBuffers / Cap'n Proto    |        **Parcode**         |
+| :----------------------- | :------------------------------ | :------------------------- |
+| **Schema Definition**    | External IDL files (`.fbs`)     | **Standard Rust Structs**  |
+| **Build Process**        | Requires external CLI (`flatc`) | **Standard `cargo build`** |
+| **Refactoring**          | Manual sync across files        | **IDE Rename / Refactor**  |
+| **Developer Experience** | Foreign                         | **Native**                 |
 
 ## Installation
 
@@ -132,7 +132,7 @@ let reader = ParcodeReader::open("savegame.par")?;
 
 // 2. Get the Lazy Mirror (Instant, reads only header)
 // Note: We get 'GameWorldLazy', a generated shadow struct.
-let world_mirror = reader.read_lazy::<GameWorld>()?;
+let world_mirror = reader.root::<GameWorld>()?;
 
 // 3. Access local fields directly (Already in memory)
 println!("World ID: {}", world_mirror.id);
@@ -250,17 +250,40 @@ Control exactly how your data structure maps to disk using `#[parcode(...)]`.
 
 ---
 
-## Benchmarks vs The World
+## Benchmarks
 
-> **Scenario:** Cold Start of an application reading a massive World State file (100MB+).
+> **Scenario:** Opening a persisted world state (~10 MB) and accessing a single piece of data.
 
-| Operation | Tool | Time | Memory (Peak) | Notes |
-| :--- | :--- | :--- | :--- | :--- |
-| **Cold Start** (Ready to read metadata) | **Parcode** | **0.16 ms** | **0 MB** | Instant. Only headers read. |
-| | Bincode | 97.47 ms | 30 MB | Forced to deserialize everything. |
-| **Deep Fetch** (Load 1 asset) | **Parcode** | **3.20 ms** | **3.8 MB** | Loads only the target 1MB chunk. |
-| | Bincode | 97.47 ms | 30 MB | Same cost as full load. |
-| **Map Lookup** (Find user by ID) | **Parcode** | **0.02 ms** | **0 MB** | **4000x Faster**. Hash Sharding win. |
+| Serializer  |   Cold Start | Deep Field Access |    Map Lookup |     Total (Cold + Targeted Access) |
+| ----------- | -----------: | ----------------: | ------------: | ---------------------------------: |
+| **Parcode** | **~1.38 ms** |      ~0.000017 ms |   ~0.00016 ms | **~1.38 ms + ~0.0001 ms / target** |
+| Cap’n Proto |       ~60 ms |      ~0.000046 ms |   ~0.00437 ms |        ~60 ms + ~0.004 ms / target |
+| Postcard    |       ~80 ms |      ~0.000017 ms |  ~0.000017 ms |      ~80 ms + ~0.00002 ms / target |
+| Bincode     |      ~299 ms |      ~0.000015 ms | ~0.0000025 ms |     ~299 ms + ~0.00001 ms / target |
+
+---
+
+### This table shows
+
+* **Cold Start** dominates total latency for traditional serializers
+* **Targeted access cost is negligible** *once data is loaded*
+* Therefore, **real-world point access latency ≈ cold-start time**
+
+Parcode is the only system where:
+
+* Cold start is *constant*
+* Access cost scales only with the data actually requested
+* Unused data is never deserialized
+
+---
+
+### Key takeaway
+
+> **True laziness is not about fast reads — it is about avoiding unnecessary work.**
+
+Parcode minimizes **observable latency** by paying only for:
+
+`Cold start (structural metadata) + exactly the data you touch (and his shard)`
 
 *Benchmarks run on NVMe SSD. Parallel throughput scales with cores.*
 
