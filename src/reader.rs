@@ -96,7 +96,7 @@
 //! ### Lazy Loading (On-Demand)
 //!
 //! ```rust
-//! use parcode::{Parcode, ParcodeFile, ParcodeObject};
+//! use parcode::{Parcode, ParcodeObject};
 //! use serde::{Serialize, Deserialize};
 //!
 //! #[derive(Serialize, Deserialize, ParcodeObject)]
@@ -115,7 +115,7 @@
 //! let state = GameState { level: 1, assets: Assets { data: vec![0; 10] } };
 //! Parcode::save("game_reader.par", &state).unwrap();
 //!
-//! let file = ParcodeFile::open("game_reader.par").unwrap();
+//! let file = Parcode::open("game_reader.par").unwrap();
 //! let game_lazy = file.root::<GameState>().unwrap();
 //!
 //! // Access local fields (instant, already in memory)
@@ -129,7 +129,7 @@
 //! ### Random Access
 //!
 //! ```rust
-//! use parcode::{Parcode, ParcodeFile, ParcodeObject};
+//! use parcode::{Parcode, ParcodeObject};
 //! use serde::{Serialize, Deserialize};
 //!
 //! #[derive(Serialize, Deserialize, ParcodeObject, Clone, Debug)]
@@ -139,19 +139,19 @@
 //! let data: Vec<MyStruct> = (0..100).map(|i| MyStruct { val: i }).collect();
 //! Parcode::save("data_random.par", &data).unwrap();
 //!
-//! let file = ParcodeFile::open("data_random.par").unwrap();
-//! let root = file.root_node().unwrap();
+//! let file = Parcode::open("data_random.par").unwrap();
+//! let root = file.root::<Vec<MyStruct>>().unwrap();
 //!
 //! // Get item at index 50 without loading the entire vector
 //! // Note: Using 50 instead of 1,000,000 for a realistic small test
-//! let item: MyStruct = root.get::<MyStruct>(50).unwrap();
+//! let item = root.get(50).unwrap();
 //! # std::fs::remove_file("data_random.par").ok();
 //! ```
 //!
 //! ### Streaming Iteration
 //!
 //! ```rust
-//! use parcode::{Parcode, ParcodeFile, ParcodeObject};
+//! use parcode::{Parcode, ParcodeObject};
 //! use serde::{Serialize, Deserialize};
 //!
 //! #[derive(Serialize, Deserialize, ParcodeObject, Clone, Debug)]
@@ -163,13 +163,12 @@
 //! let data: Vec<MyStruct> = (0..10).map(|i| MyStruct { val: i }).collect();
 //! Parcode::save("data_iter.par", &data).unwrap();
 //!
-//! let file = ParcodeFile::open("data_iter.par").unwrap();
-//! let root = file.root_node().unwrap();
+//! let file = Parcode::open("data_iter.par").unwrap();
+//! let items: Vec<MyStruct> = file.load().unwrap();
 //!
 //! // Note: The current API doesn't have a direct `iter` on root for Vecs yet,
 //! // it usually goes through read_lazy or decode.
 //! // Assuming we just decode for now as the example implies iteration capability.
-//! let items: Vec<MyStruct> = root.decode_parallel_collection().unwrap();
 //! for item in items {
 //!     process(item);
 //! }
@@ -223,7 +222,7 @@ use crate::rt::ParcodeLazyRef;
 
 /// A trait for types that know how to reconstruct themselves from a [`ChunkNode`].
 ///
-/// This trait enables the high-level API ([`Parcode::read`](crate::Parcode::read)) to
+/// This trait enables the high-level API ([`Parcode::load`](crate::Parcode::load)) to
 /// automatically select the optimal reconstruction strategy based on the type being read.
 ///
 /// ## Strategy Selection
@@ -244,7 +243,6 @@ use crate::rt::ParcodeLazyRef;
 ///
 /// ```rust
 /// use parcode::Parcode;
-/// use parcode::reader::ParcodeNative;
 ///
 /// // Automatically selects parallel reconstruction for Vec
 /// let data = vec![1, 2, 3];

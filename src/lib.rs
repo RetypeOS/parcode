@@ -53,7 +53,7 @@
 //!
 //! Each chunk is self-contained with:
 //! ```text
-//! [Compressed Payload] [Children Table (Optional)] [MetaByte]
+//! [Payload] [Children Table (Optional)] [MetaByte]
 //! ```
 //!
 //! The Global Header at the end of the file points to the Root Chunk, which serves as the
