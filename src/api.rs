@@ -11,7 +11,7 @@
 //! 1. **Simplicity for Common Cases:** The [`Parcode::save`] and [`Parcode::load`] methods
 //!    provide zero-configuration serialization for most use cases.
 //!
-//! 2. **Flexibility for Advanced Use:** The builder pattern ([`Parcode::builder` or `ParcodeOptions``::default()`) allows
+//! 2. **Flexibility for Advanced Use:** The builder pattern ([`Parcode::builder`] or [`ParcodeOptions::default`()]) allows
 //!    fine-grained control over compression, buffer sizes, and other parameters.
 //!
 //! ## Usage Patterns
@@ -306,7 +306,7 @@ impl ParcodeOptions {
         self.write_to_writer(file, root_object)
     }
 
-    /// Serializes the object graph to a generic writer (File, Vec<u8>, `TcpStream`, etc).
+    /// Serializes the object graph to a generic writer (File, `Vec<u8>`, `TcpStream`, etc).
     ///
     /// This method performs the complete serialization pipeline:
     ///
