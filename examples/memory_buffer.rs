@@ -75,7 +75,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Reading from a memory buffer directly (without file) would require a `ParcodeReader::from_bytes`
     // which is a separate feature (Reader refactor).
     // For now, we verify by reading the dumped file.
-    let loaded: UserProfile = Parcode::read(path)?;
+    let loaded: UserProfile = Parcode::load(path)?;
     println!("Loaded data:   {:?}", loaded);
 
     assert_eq!(user, loaded);

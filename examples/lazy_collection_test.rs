@@ -1,6 +1,6 @@
 //! Verification test for .`get_lazy()` on collections.
 
-use parcode::{Parcode, ParcodeObject, ParcodeReader};
+use parcode::{Parcode, ParcodeObject};
 use serde::{Deserialize, Serialize};
 
 /// A heavy item that contains a large data payload.
@@ -37,8 +37,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Parcode::save(path, &container)?;
 
     // 2. Read back
-    let reader = ParcodeReader::open(path)?;
-    let root_lazy = reader.read_lazy::<Container>()?;
+    let file_handle = Parcode::open(path)?;
+    let root_lazy = file_handle.root::<Container>()?;
 
     // 3. Access lazy collection
     let items_lazy = root_lazy.items; // ParcodeCollectionPromise

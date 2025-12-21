@@ -1,7 +1,7 @@
 //! Demostrates lazy and granular access to complex structures.
 //! Run: cargo run --example `lazy_loading`
 
-use parcode::{Parcode, ParcodeObject, ParcodeReader};
+use parcode::{Parcode, ParcodeObject};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use tempfile::NamedTempFile;
@@ -62,10 +62,10 @@ fn main() -> parcode::Result<()> {
 
     // 2. Lazy Reading
     println!("\n--- Lazy Access ---");
-    let reader = ParcodeReader::open(file.path())?;
+    let file_handle = Parcode::open(file.path())?;
 
     let start_lazy = Instant::now();
-    let lazy_world = reader.read_lazy::<GameWorld>()?;
+    let lazy_world = file_handle.root::<GameWorld>()?;
     println!("Lazy Metadata Loaded in {:.2?}", start_lazy.elapsed());
     let printed_lazy = Instant::now();
     // Access to local metadata (Instant)

@@ -11,7 +11,7 @@
 //! - **Debugging:** visualizing the dependency graph of your serialized data.
 
 use crate::error::Result;
-use crate::reader::{ChunkNode, ParcodeReader};
+use crate::reader::{ChunkNode, ParcodeFile};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -56,22 +56,23 @@ pub struct ChunkInfo {
 pub struct ParcodeInspector;
 
 impl ParcodeInspector {
-    /// Analyzes a file and returns a structural report.
-    pub fn inspect<P: AsRef<Path>>(path: P) -> Result<DebugReport> {
-        let reader = ParcodeReader::open(path)?;
-        let root = reader.root()?;
-
-        // Note: In a real prod scenario, we might want to expose file_size via reader getter
-        // For now we trust the reader opened successfully.
-
+    /// Inspects an already open file.
+    pub fn inspect_file(file: &ParcodeFile) -> Result<DebugReport> {
+        let root = file.root_node()?;
         let tree = Self::inspect_node(&root)?;
 
         Ok(DebugReport {
-            file_size: 0, // Placeholder or need to expose reader.file_size
+            file_size: file.file_size(),
             root_offset: root.offset(),
             global_version: 4,
             tree,
         })
+    }
+
+    /// Convenience wrapper to inspect from path (matches old API if needed).
+    pub fn inspect<P: AsRef<Path>>(path: P) -> Result<DebugReport> {
+        let file = ParcodeFile::open(path)?;
+        Self::inspect_file(&file)
     }
 
     fn inspect_node(node: &ChunkNode<'_>) -> Result<ChunkInfo> {

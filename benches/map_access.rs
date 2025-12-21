@@ -3,7 +3,7 @@
 //!
 #![allow(missing_docs)]
 use criterion::{Criterion, criterion_group, criterion_main};
-use parcode::{Parcode, ParcodeObject, ParcodeReader};
+use parcode::{Parcode, ParcodeObject};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tempfile::NamedTempFile;
@@ -35,9 +35,9 @@ fn bench_map(c: &mut Criterion) {
 
     group.bench_function("optimized_lookup", |b| {
         // Setup reader once per batch to simulate persistent app
-        let reader = ParcodeReader::open(&path).expect("Failed to open reader");
-        let lazy = reader
-            .read_lazy::<MapContainer>()
+        let file_handle = Parcode::open(&path).expect("Failed to open file");
+        let lazy = file_handle
+            .root::<MapContainer>()
             .expect("Failed to read lazy");
 
         b.iter(|| {

@@ -37,7 +37,7 @@ fn main() -> parcode::Result<()> {
     println!("{}", report);
 
     // Verify Data
-    let loaded_jagged: JaggedContainer = Parcode::read("stress_jagged.par")?;
+    let loaded_jagged: JaggedContainer = Parcode::load("stress_jagged.par")?;
     assert_eq!(loaded_jagged.data.len(), 201);
     assert_eq!(
         loaded_jagged.data.get(100).expect("Missing element").len(),
@@ -102,7 +102,7 @@ fn main() -> parcode::Result<()> {
     println!("{}", report_nested);
 
     // Verify Data
-    let loaded_root: DeepRoot = Parcode::read("stress_nested.par")?;
+    let loaded_root: DeepRoot = Parcode::load("stress_nested.par")?;
     assert_eq!(loaded_root.level_1_vec.len(), 2);
     let first_wrapper = &loaded_root.level_1_vec.first().expect("Missing element");
     let blob = first_wrapper

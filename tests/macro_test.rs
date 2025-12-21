@@ -33,7 +33,7 @@ fn test_macro_ergonomics() {
     Parcode::save(file.path(), &level).expect("Failed to save parcode data");
 
     // 2. Load (The macro handles reconstruction)
-    let loaded: LevelState = Parcode::read(file.path()).expect("Failed to read parcode data");
+    let loaded: LevelState = Parcode::load(file.path()).expect("Failed to read parcode data");
 
     assert_eq!(level, loaded);
 }

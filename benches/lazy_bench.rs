@@ -1,7 +1,7 @@
 #![allow(missing_docs)]
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use parcode::{Parcode, ParcodeObject, ParcodeReader};
+use parcode::{Parcode, ParcodeObject};
 use serde::{Deserialize, Serialize};
 use std::hint::black_box;
 use tempfile::NamedTempFile;
@@ -47,7 +47,7 @@ fn bench_lazy(c: &mut Criterion) {
     // Caso A: Carga Completa (Estándar)
     group.bench_function("full_load", |b| {
         b.iter(|| {
-            let loaded: Root = Parcode::read(&path).expect("Failed to read parcode data");
+            let loaded: Root = Parcode::load(&path).expect("Failed to read parcode data");
             black_box(loaded.child_a.meta);
         });
     });
@@ -55,8 +55,8 @@ fn bench_lazy(c: &mut Criterion) {
     // Caso B: Carga Lazy (Solo metadatos)
     group.bench_function("lazy_meta_only", |b| {
         b.iter(|| {
-            let reader = ParcodeReader::open(&path).expect("Failed to open reader");
-            let lazy = reader.read_lazy::<Root>().expect("Failed to read lazy");
+            let file_handle = Parcode::open(&path).expect("Failed to open file");
+            let lazy = file_handle.root::<Root>().expect("Failed to read lazy");
             // Accedemos a meta profundo A y B
             let sum = lazy.child_a.meta + lazy.child_b.meta;
             black_box(sum);
@@ -66,8 +66,8 @@ fn bench_lazy(c: &mut Criterion) {
     // Caso C: Carga Parcial (Meta A + Payload A)
     group.bench_function("lazy_partial_load", |b| {
         b.iter(|| {
-            let reader = ParcodeReader::open(&path).expect("Failed to open reader");
-            let lazy = reader.read_lazy::<Root>().expect("Failed to read lazy");
+            let file_handle = Parcode::open(&path).expect("Failed to open file");
+            let lazy = file_handle.root::<Root>().expect("Failed to read lazy");
             let payload = lazy.child_a.payload.load().expect("Failed to load payload");
             black_box(payload.len());
         });

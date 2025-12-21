@@ -3,7 +3,7 @@
 #![allow(missing_docs)]
 
 use parcode::{
-    Parcode, ParcodeError, ParcodeObject, ParcodeReader, Result,
+    Parcode, ParcodeError, ParcodeObject, Result,
     format::ChildRef,
     graph::{ChunkId, JobConfig, SerializationJob, TaskGraph},
     visitor::ParcodeVisitor,
@@ -229,7 +229,7 @@ fn test_primitive_lifecycle() -> Result<()> {
     Parcode::save(file.path(), &user)?;
 
     // READ
-    let loaded_user: TestUser = Parcode::read(file.path())?;
+    let loaded_user: TestUser = Parcode::load(file.path())?;
 
     assert_eq!(user, loaded_user);
     Ok(())
@@ -245,13 +245,13 @@ fn test_massive_vector_sharding() -> Result<()> {
     let file = NamedTempFile::new()?;
     Parcode::save(file.path(), &data)?;
 
-    let loaded_data: Vec<u64> = Parcode::read(file.path())?;
+    let loaded_data: Vec<u64> = Parcode::load(file.path())?;
 
     assert_eq!(data.len(), loaded_data.len());
     assert_eq!(data, loaded_data);
 
-    let reader = ParcodeReader::open(file.path())?;
-    let root = reader.root()?;
+    let file_handle = Parcode::open(file.path())?;
+    let root = file_handle.root_node()?;
     let shards = root.children()?;
     println!("Shards created: {}", shards.len());
     assert!(
@@ -288,8 +288,8 @@ fn test_nested_structures() -> Result<()> {
     let file = NamedTempFile::new()?;
     Parcode::save(file.path(), &dir)?;
 
-    let reader = ParcodeReader::open(file.path())?;
-    let root = reader.root()?;
+    let file_handle = Parcode::open(file.path())?;
+    let root = file_handle.root_node()?;
 
     #[derive(Deserialize)]
     struct Header {
@@ -317,8 +317,8 @@ fn test_random_access_logic() -> Result<()> {
     let file = NamedTempFile::new()?;
     Parcode::save(file.path(), &data)?;
 
-    let reader = ParcodeReader::open(file.path())?;
-    let root = reader.root()?;
+    let file_handle = Parcode::open(file.path())?;
+    let root = file_handle.root_node()?;
 
     let val_0: u64 = root.get(0)?;
     let val_mid: u64 = root.get(25_000)?;
@@ -342,7 +342,7 @@ fn test_corruption_and_errors() -> Result<()> {
     {
         let _f = File::create(&path)?;
     }
-    let res = ParcodeReader::open(&path);
+    let res = Parcode::open(&path);
     assert!(matches!(res, Err(ParcodeError::Format(_))));
 
     {
@@ -350,7 +350,7 @@ fn test_corruption_and_errors() -> Result<()> {
         let junk = vec![0u8; 100];
         f.write_all(&junk)?;
     }
-    let res = ParcodeReader::open(&path);
+    let res = Parcode::open(&path);
     if let Err(ParcodeError::Format(msg)) = res {
         assert!(msg.contains("Magic"));
     } else {
@@ -368,7 +368,7 @@ fn test_corruption_and_errors() -> Result<()> {
     let f = OpenOptions::new().write(true).open(&path)?;
     f.set_len(len / 2)?;
 
-    let res = ParcodeReader::open(&path);
+    let res = Parcode::open(&path);
     assert!(res.is_err());
 
     Ok(())

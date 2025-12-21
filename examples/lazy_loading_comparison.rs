@@ -3,7 +3,7 @@
 
 #![allow(missing_docs)]
 
-use parcode::{Parcode, ParcodeObject, ParcodeReader};
+use parcode::{Parcode, ParcodeObject};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{Read, Write};
@@ -55,8 +55,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Writting: {:.2?}", start_write.elapsed());
 
     let start_meta = Instant::now();
-    let reader = ParcodeReader::open(file_parcode.path())?;
-    let lazy_world = reader.read_lazy::<GameWorld>()?;
+    let file_handle = Parcode::open(file_parcode.path())?;
+    let lazy_world = file_handle.root::<GameWorld>()?;
     println!("Metadata reading: {:.2?}", start_meta.elapsed());
     println!("World Name: {}", lazy_world.world_name);
     println!("Skybox ID: {}", lazy_world.skybox.id);
