@@ -81,7 +81,7 @@
 //!
 //! ### Reader
 //!
-//! The [`ParcodeReader`] is responsible for memory-mapping the file and reconstructing objects.
+//! The [`ParcodeFile`] is responsible for memory-mapping the file and reconstructing objects.
 //! It provides both eager (full deserialization) and lazy (on-demand) reading strategies,
 //! automatically selecting the optimal approach based on the data type.
 //!
@@ -126,14 +126,14 @@
 //! Parcode::save("game_lib.par", &state).unwrap();
 //!
 //! // Load (eager)
-//! let loaded: GameState = Parcode::read("game_lib.par").unwrap();
+//! let loaded: GameState = Parcode::load("game_lib.par").unwrap();
 //! # std::fs::remove_file("game_lib.par").ok();
 //! ```
 //!
 //! ### Lazy Loading
 //!
 //! ```rust
-//! use parcode::{Parcode, ParcodeReader, ParcodeObject};
+//! use parcode::{Parcode, ParcodeFile, ParcodeObject};
 //! use serde::{Serialize, Deserialize};
 //!
 //! #[derive(Serialize, Deserialize, ParcodeObject)]
@@ -161,8 +161,8 @@
 //! };
 //! Parcode::save("game_lazy.par", &state).unwrap();
 //!
-//! let reader = ParcodeReader::open("game_lazy.par").unwrap();
-//! let state_lazy = reader.read_lazy::<GameState>().unwrap();
+//! let file = Parcode::open("game_lazy.par").unwrap();
+//! let state_lazy = file.root::<GameState>().unwrap();
 //!
 //! // Access local fields instantly (already in memory)
 //! println!("Level: {}", state_lazy.level);
@@ -175,7 +175,7 @@
 //! ### `HashMap` Sharding
 //!
 //! ```rust
-//! use parcode::{Parcode, ParcodeReader, ParcodeObject};
+//! use parcode::{Parcode, ParcodeFile, ParcodeObject};
 //! use serde::{Serialize, Deserialize};
 //! use std::collections::HashMap;
 //!
@@ -194,8 +194,8 @@
 //! let db = Database { users };
 //! Parcode::save("db_map.par", &db).unwrap();
 //!
-//! let reader = ParcodeReader::open("db_map.par").unwrap();
-//! let db_lazy = reader.read_lazy::<Database>().unwrap();
+//! let file = Parcode::open("db_map.par").unwrap();
+//! let db_lazy = file.root::<Database>().unwrap();
 //! let user = db_lazy.users.get(&12345u64).expect("User not found");
 //! # std::fs::remove_file("db_map.par").ok();
 //! ```
@@ -263,9 +263,9 @@ pub mod internal {
 pub use compression::Lz4Compressor;
 pub use compression::{Compressor, NoCompression};
 
-pub use api::Parcode;
+pub use api::{Parcode, ParcodeOptions};
 pub use error::{ParcodeError, Result};
-pub use reader::ParcodeReader;
+pub use reader::{ParcodeFile, ParcodeItem, ParcodeNative};
 
 // Re-export the derive macro so it is accessible as `parcode::ParcodeObject`
 pub use parcode_derive::ParcodeObject;

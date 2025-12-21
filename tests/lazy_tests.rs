@@ -1,6 +1,6 @@
 #![allow(missing_docs)]
 
-use parcode::{Parcode, ParcodeObject, ParcodeReader};
+use parcode::{Parcode, ParcodeObject};
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 
@@ -39,9 +39,9 @@ fn test_lazy_mirror_access() {
     let file = NamedTempFile::new().expect("Failed to create temp file");
     Parcode::save(file.path(), &level).expect("Failed to save parcode data");
 
-    let reader = ParcodeReader::open(file.path()).expect("Failed to open reader");
+    let file_handle = Parcode::open(file.path()).expect("Failed to open file");
 
-    let lazy_level = reader.read_lazy::<Level>().expect("Failed to read lazy");
+    let lazy_level = file_handle.root::<Level>().expect("Failed to read lazy");
 
     assert_eq!(lazy_level.id, 101);
     assert_eq!(lazy_level.name, "LazyZone");

@@ -8,10 +8,10 @@
 //!
 //! The API is designed around two core principles:
 //!
-//! 1. **Simplicity for Common Cases:** The [`Parcode::save`] and [`Parcode::read`] methods
+//! 1. **Simplicity for Common Cases:** The [`Parcode::save`] and [`Parcode::load`] methods
 //!    provide zero-configuration serialization for most use cases.
 //!
-//! 2. **Flexibility for Advanced Use:** The builder pattern ([`Parcode::builder`]) allows
+//! 2. **Flexibility for Advanced Use:** The builder pattern ([`Parcode::builder` or `ParcodeOptions``::default()`) allows
 //!    fine-grained control over compression, buffer sizes, and other parameters.
 //!
 //! ## Usage Patterns
@@ -31,7 +31,7 @@
 //! Parcode::save("data_quick.par", &my_data)?;
 //!
 //! // Deserialize
-//! let loaded: MyType = Parcode::read("data_quick.par")?;
+//! let loaded: MyType = Parcode::load("data_quick.par")?;
 //! # std::fs::remove_file("data_quick.par")?;
 //! # Ok::<(), parcode::ParcodeError>(())
 //! ```
@@ -66,12 +66,60 @@ use crate::executor::execute_graph;
 use crate::format::GlobalHeader;
 use crate::graph::TaskGraph;
 use crate::io::SeqWriter;
-use crate::reader::{ParcodeNative, ParcodeReader};
+use crate::reader::{ParcodeFile, ParcodeNative};
 use crate::visitor::ParcodeVisitor;
 use std::io::Write;
 use std::path::Path;
 
-/// The main entry point for configuring and executing Parcode operations.
+/// The main entry point for Parcode.
+///
+/// Provides static methods for common operations (`save`, `load`, `open`).
+#[derive(Debug)]
+pub struct Parcode;
+
+impl Parcode {
+    /// Creates a new builder to configure serialization.
+    pub fn builder() -> ParcodeOptions {
+        ParcodeOptions::default()
+    }
+
+    /// Saves an object to a file with default settings.
+    pub fn save<T, P>(path: P, root_object: &T) -> Result<()>
+    where
+        T: ParcodeVisitor + Sync,
+        P: AsRef<Path>,
+    {
+        ParcodeOptions::default().write(path, root_object)
+    }
+
+    /// Loads an object fully into memory (Eager load).
+    pub fn load<T, P>(path: P) -> Result<T>
+    where
+        T: ParcodeNative,
+        P: AsRef<Path>,
+    {
+        // One-liner: Open -> Load
+        ParcodeFile::open(path)?.load()
+    }
+
+    /// Opens a Parcode file for advanced usage (Lazy loading, Inspection).
+    ///
+    /// Returns a [`ParcodeFile`] handle.
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<ParcodeFile> {
+        ParcodeFile::open(path)
+    }
+
+    /// Serializes an object synchronously (single-threaded) with default settings.
+    pub fn save_sync<T, P>(path: P, root_object: &T) -> Result<()>
+    where
+        T: ParcodeVisitor,
+        P: AsRef<Path>,
+    {
+        ParcodeOptions::default().save_sync(path, root_object)
+    }
+}
+
+/// Builder for configuring serialization options (compression, etc.).
 ///
 /// This struct provides a builder-style API for configuring serialization parameters
 /// and executing read/write operations. It is designed to be lightweight and can be
@@ -92,7 +140,7 @@ use std::path::Path;
 ///
 /// let data = vec![1, 2, 3];
 /// Parcode::save("data_basic.par", &data).unwrap();
-/// let loaded: Vec<i32> = Parcode::read("data_basic.par").unwrap();
+/// let loaded: Vec<i32> = Parcode::load("data_basic.par").unwrap();
 /// # std::fs::remove_file("data_basic.par").unwrap();
 /// ```
 ///
@@ -115,7 +163,7 @@ use std::path::Path;
 /// - Compression trades CPU time for reduced I/O and storage
 /// - Parallel execution scales with the number of independent chunks in your data
 #[derive(Debug, Default)]
-pub struct Parcode {
+pub struct ParcodeOptions {
     /// Whether to enable compression for serialized chunks.
     ///
     /// When `true`, the default compression algorithm will be used. The actual algorithm
@@ -123,33 +171,7 @@ pub struct Parcode {
     use_compression: bool,
 }
 
-impl Parcode {
-    /// Creates a new `Parcode` builder with default settings.
-    ///
-    /// This is the entry point for the builder pattern. The returned instance can be
-    /// configured using method chaining before calling [`write`](Self::write).
-    ///
-    /// ## Default Settings
-    ///
-    /// - Compression: Disabled
-    ///
-    /// ## Examples
-    ///
-    /// ```rust
-    /// use parcode::Parcode;
-    ///
-    /// let parcode = Parcode::builder()
-    ///     .compression(true);
-    /// ```
-    ///
-    /// ## Performance
-    ///
-    /// This method is extremely lightweight (just creates a small struct) and can be
-    /// called repeatedly without concern for performance.
-    pub fn builder() -> Self {
-        Self::default()
-    }
-
+impl ParcodeOptions {
     /// Enables or disables compression for all chunks.
     ///
     /// When compression is enabled, the library will use the default compression algorithm
@@ -198,144 +220,6 @@ impl Parcode {
     pub fn compression(mut self, enable: bool) -> Self {
         self.use_compression = enable;
         self
-    }
-
-    /// Reads and fully deserializes an object from a Parcode file.
-    ///
-    /// This method automatically selects the optimal reconstruction strategy based on the
-    /// type being read:
-    ///
-    /// - **Collections (`Vec<T>`):** Uses parallel reconstruction across shards
-    /// - **Maps (`HashMap`<K, V>):** Reconstructs all shards and merges entries
-    /// - **Primitives and Structs:** Uses sequential deserialization
-    ///
-    /// ## Type Parameters
-    ///
-    /// - `T`: The type to deserialize. Must implement [`ParcodeNative`].
-    /// - `P`: The path type (anything that implements `AsRef<Path>`).
-    ///
-    /// ## Parameters
-    ///
-    /// - `path`: The file path to read from.
-    ///
-    /// ## Returns
-    ///
-    /// Returns the fully deserialized object of type `T`.
-    ///
-    /// ## Errors
-    ///
-    /// This method can fail if:
-    ///
-    /// - The file does not exist or cannot be opened
-    /// - The file is not a valid Parcode file (wrong magic bytes or version)
-    /// - The file is corrupted or truncated
-    /// - Deserialization fails (e.g., type mismatch)
-    /// - Decompression fails
-    ///
-    /// ## Examples
-    ///
-    /// ```rust
-    /// use parcode::{Parcode, ParcodeObject};
-    /// use serde::{Serialize, Deserialize};
-    ///
-    /// #[derive(Serialize, Deserialize, ParcodeObject)]
-    /// struct GameState { level: u32 }
-    ///
-    /// // Setup
-    /// let data = vec![1, 2, 3];
-    /// Parcode::save("numbers_read.par", &data)?;
-    /// let state = GameState { level: 1 };
-    /// Parcode::save("game_read.par", &state)?;
-    ///
-    /// // Read a vector
-    /// let data: Vec<i32> = Parcode::read("numbers_read.par")?;
-    ///
-    /// // Read a custom struct
-    /// let state: GameState = Parcode::read("game_read.par")?;
-    /// # std::fs::remove_file("numbers_read.par")?;
-    /// # std::fs::remove_file("game_read.par")?;
-    /// # Ok::<(), parcode::ParcodeError>(())
-    /// ```
-    pub fn read<T, P>(path: P) -> Result<T>
-    where
-        T: ParcodeNative,
-        P: AsRef<Path>,
-    {
-        let reader = ParcodeReader::open(path)?;
-        let root = reader.root()?;
-
-        // Dispatches to Vec::from_node (Parallel) or T::from_node (Simple)
-        T::from_node(&root)
-    }
-
-    /// Saves an object to a file using default settings (no compression).
-    ///
-    /// This is a convenience method that creates a default `Parcode` instance and calls
-    /// [`write`](Self::write).
-    ///
-    /// ## Type Parameters
-    ///
-    /// - `T`: The type to serialize. Must implement [`ParcodeVisitor`]
-    ///   and `Sync` (for parallel execution).
-    /// - `P`: The path type (anything that implements `AsRef<Path>`).
-    ///
-    /// ## Parameters
-    ///
-    /// - `path`: The file path to write to. If the file exists, it will be truncated.
-    /// - `root_object`: A reference to the object to serialize.
-    ///
-    /// ## Returns
-    ///
-    /// Returns `Ok(())` on success.
-    ///
-    /// ## Errors
-    ///
-    /// This method can fail if:
-    ///
-    /// - The file cannot be created (e.g., permission denied, disk full)
-    /// - Serialization fails (e.g., bincode error)
-    /// - I/O errors occur during writing
-    ///
-    /// ## Examples
-    ///
-    /// ```rust
-    /// use parcode::{Parcode, ParcodeObject};
-    /// use serde::{Serialize, Deserialize};
-    ///
-    /// #[derive(Serialize, Deserialize, ParcodeObject)]
-    /// struct MyData {
-    ///     value: i32,
-    /// }
-    ///
-    /// let data = MyData { value: 42 };
-    /// Parcode::save("data_save.par", &data)?;
-    /// # std::fs::remove_file("data_save.par")?;
-    /// # Ok::<(), parcode::ParcodeError>(())
-    /// ```
-    ///
-    /// ## Performance
-    ///
-    /// - **Zero-Copy:** The serializer borrows data rather than cloning it
-    /// - **Parallel Execution:** Independent chunks are processed concurrently
-    /// - **Buffered I/O:** Uses a 16MB buffer to minimize syscalls
-    ///
-    /// For custom configuration (e.g., enabling compression), use the builder pattern:
-    ///
-    /// ```rust
-    /// use parcode::Parcode;
-    /// let data = vec![1, 2, 3];
-    /// Parcode::builder()
-    ///     .compression(true)
-    ///     .write("data_builder.par", &data)?;
-    /// # std::fs::remove_file("data_builder.par")?;
-    /// # Ok::<(), parcode::ParcodeError>(())
-    /// ```
-    pub fn save<T, P>(path: P, root_object: &T) -> Result<()>
-    where
-        T: ParcodeVisitor + Sync,
-        P: AsRef<Path>,
-    {
-        Self::default().write(path, root_object)
     }
 
     /// Serializes an object graph to disk with the configured settings.
@@ -486,7 +370,7 @@ impl Parcode {
 
         // 3. Execute the Graph (Parallel)
         let registry = crate::compression::CompressorRegistry::new();
-        let root_child_ref = execute_graph(&graph, &seq_writer, &registry)?;
+        let root_child_ref = execute_graph(&graph, &seq_writer, &registry, self.use_compression)?;
 
         // 4. Write Global Header
         let header = GlobalHeader::new(root_child_ref.offset, root_child_ref.length);
@@ -504,12 +388,12 @@ impl Parcode {
     /// - Benchmarking vs Parallel implementation.
     ///
     /// It uses less memory than `write` because it reuses a single compression buffer.
-    pub fn save_sync<T, P>(path: P, root_object: &T) -> Result<()>
+    pub fn save_sync<T, P>(&self, path: P, root_object: &T) -> Result<()>
     where
         T: ParcodeVisitor,
         P: AsRef<Path>,
     {
-        Self::default().write_sync(path, root_object)
+        self.write_sync(path, root_object)
     }
 
     /// Internal synchronous write implementation.
@@ -531,7 +415,8 @@ impl Parcode {
         let registry = crate::compression::CompressorRegistry::new();
 
         // Pass writer by VALUE (move)
-        let root_child_ref = crate::executor::execute_graph_sync(&graph, writer, &registry)?;
+        let root_child_ref =
+            crate::executor::execute_graph_sync(&graph, writer, &registry, self.use_compression)?;
 
         // Simpler approach for this iteration: Open file to append header.
         // It's a tiny write (26 bytes), overhead is negligible compared to main payload.

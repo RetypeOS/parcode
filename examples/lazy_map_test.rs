@@ -1,6 +1,6 @@
 //! Verification test for .`get_lazy()` on `HashMaps`.
 
-use parcode::{Parcode, ParcodeObject, ParcodeReader};
+use parcode::{Parcode, ParcodeObject};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -45,8 +45,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Parcode::save(path, &db)?;
 
     // 2. Read back
-    let reader = ParcodeReader::open(path)?;
-    let root_lazy = reader.read_lazy::<UserDatabase>()?;
+    let file_handle = Parcode::open(path)?;
+    let root_lazy = file_handle.root::<UserDatabase>()?;
 
     // 3. Access lazy map
     let users_lazy = root_lazy.users; // ParcodeMapPromise

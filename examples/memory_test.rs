@@ -5,7 +5,7 @@
 #![allow(unsafe_code)]
 
 use parcode::{
-    Parcode, ParcodeReader,
+    Parcode,
     graph::{ChunkId, JobConfig, SerializationJob, TaskGraph},
     visitor::ParcodeVisitor,
 };
@@ -245,7 +245,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         ALLOCATOR.reset();
         let start = Instant::now();
-        let loaded: Vec<ComplexItem> = Parcode::read(&path_parcode_raw)?;
+        let loaded: Vec<ComplexItem> = Parcode::load(&path_parcode_raw)?;
         black_box(loaded.len());
         let dur = start.elapsed();
         let peak = ALLOCATOR.peak() as f64 / 1_048_576.0;
@@ -283,8 +283,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         ALLOCATOR.reset();
         let start = Instant::now();
-        let reader = ParcodeReader::open(&path_parcode_lz4)?; // Reading the compressed one!
-        let root = reader.root()?;
+        let file_handle = Parcode::open(&path_parcode_lz4)?; // Reading the compressed one!
+        let root = file_handle.root_node()?;
 
         let mut count = 0;
         // Using the low-level iterator
@@ -311,8 +311,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         ALLOCATOR.reset();
         let start = Instant::now();
-        let reader = ParcodeReader::open(&path_parcode_raw)?;
-        let root = reader.root()?;
+        let file_handle = Parcode::open(&path_parcode_raw)?;
+        let root = file_handle.root_node()?;
 
         // Access 10 random items spread across the dataset
         for i in 0..10 {

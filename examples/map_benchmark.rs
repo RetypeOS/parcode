@@ -4,7 +4,7 @@
 #![allow(missing_docs)]
 #![allow(unsafe_code)]
 
-use parcode::{Parcode, ParcodeObject, ParcodeReader};
+use parcode::{Parcode, ParcodeObject};
 use serde::{Deserialize, Serialize};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::HashMap;
@@ -155,8 +155,8 @@ fn main() -> parcode::Result<()> {
 
     // A. Optimized (Lazy)
     ALLOCATOR.reset();
-    let reader = ParcodeReader::open(file_opt.path())?;
-    let lazy = reader.read_lazy::<OptimizedMap>()?;
+    let file_handle = Parcode::open(file_opt.path())?;
+    let lazy = file_handle.root::<OptimizedMap>()?;
     let start = Instant::now();
     let mut hits = 0;
     for i in 0u64..1000 {
@@ -177,8 +177,8 @@ fn main() -> parcode::Result<()> {
 
     // B. Standard (Full Load required)
     ALLOCATOR.reset();
-    let reader = ParcodeReader::open(file_std.path())?;
-    let lazy = reader.read_lazy::<StandardMap>()?;
+    let file_handle = Parcode::open(file_std.path())?;
+    let lazy = file_handle.root::<StandardMap>()?;
     let start = Instant::now();
     let loaded_map = lazy.data.load()?;
     for i in 0u64..1000 {

@@ -1,6 +1,6 @@
 #![allow(missing_docs)]
 
-use parcode::{Parcode, ParcodeObject, ParcodeReader};
+use parcode::{Parcode, ParcodeObject};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tempfile::NamedTempFile;
@@ -42,9 +42,9 @@ fn test_optimized_map_access() {
     Parcode::save(file.path(), &db).expect("Failed to save parcode data");
 
     // 2. Lectura Lazy con Acceso Aleatorio O(1)
-    let reader = ParcodeReader::open(file.path()).expect("Failed to open reader");
-    let lazy_db = reader
-        .read_lazy::<UserDatabase>()
+    let file_handle = Parcode::open(file.path()).expect("Failed to open file");
+    let lazy_db = file_handle
+        .root::<UserDatabase>()
         .expect("Failed to read lazy");
 
     // A. Búsqueda Exitosa (Random Access)

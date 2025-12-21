@@ -2,8 +2,7 @@
 #![allow(missing_docs)]
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use parcode::ParcodeObject;
-use parcode::{Parcode, ParcodeReader, graph::*, visitor::ParcodeVisitor};
+use parcode::{Parcode, ParcodeObject, graph::*, visitor::ParcodeVisitor};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::hint::black_box;
@@ -126,8 +125,8 @@ fn bench_readers(c: &mut Criterion) {
     Parcode::save(parcode_file.path(), &data).expect("Failed to save parcode data");
     let parcode_path = parcode_file.path().to_owned();
 
-    let reader = ParcodeReader::open(&parcode_path).expect("Failed to open reader");
-    let root = reader.root().expect("Failed to get root");
+    let file_handle = Parcode::open(&parcode_path).expect("Failed to open file");
+    let root = file_handle.root_node().expect("Failed to get root");
     println!(
         "Chunks detected: {}",
         root.children().expect("Failed to get children").len()
@@ -150,8 +149,8 @@ fn bench_readers(c: &mut Criterion) {
     // 2. Parcode: Random Access (Single item)
     group.bench_function("parcode_random_access_10", |b| {
         b.iter(|| {
-            let reader = ParcodeReader::open(&parcode_path).expect("Failed to open reader");
-            let root = reader.root().expect("Failed to get root");
+            let file_handle = Parcode::open(&parcode_path).expect("Failed to open file");
+            let root = file_handle.root_node().expect("Failed to get root");
 
             for i in (0..10).map(|x| x * (item_count / 10)) {
                 let _obj: BenchItem = root.get(i).expect("Failed to get item");
@@ -162,8 +161,8 @@ fn bench_readers(c: &mut Criterion) {
     // 3. Parcode: Full Scan (Manual Shard Iteration)
     group.bench_function("parcode_full_scan_manual", |b| {
         b.iter(|| {
-            let reader = ParcodeReader::open(&parcode_path).expect("Failed to open reader");
-            let root = reader.root().expect("Failed to get root");
+            let file_handle = Parcode::open(&parcode_path).expect("Failed to open file");
+            let root = file_handle.root_node().expect("Failed to get root");
 
             // Get the Shards (direct children)
             let shards = root.children().expect("Failed to get children");
@@ -184,8 +183,8 @@ fn bench_readers(c: &mut Criterion) {
     // Añadimos esto para probar la velocidad de reconstrucción total
     group.bench_function("parcode_read_all_parallel", |b| {
         b.iter(|| {
-            let reader = ParcodeReader::open(&parcode_path).expect("Failed to open reader");
-            let root = reader.root().expect("Failed to get root");
+            let file_handle = Parcode::open(&parcode_path).expect("Failed to open file");
+            let root = file_handle.root_node().expect("Failed to get root");
             let _res: Vec<BenchItem> = root
                 .decode_parallel_collection()
                 .expect("Failed to decode parallel");

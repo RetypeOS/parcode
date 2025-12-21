@@ -5,7 +5,7 @@
 #![allow(missing_docs)]
 #![allow(unsafe_code)]
 
-use parcode::{Parcode, ParcodeObject, ParcodeReader};
+use parcode::{Parcode, ParcodeObject};
 use serde::{Deserialize, Serialize};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::HashMap;
@@ -216,8 +216,8 @@ fn main() -> parcode::Result<()> {
     // Parcode: Lazy Read (Solo lee Header + Root Chunk)
     ALLOCATOR.reset();
     let t_start = Instant::now();
-    let reader = ParcodeReader::open(path_par.path())?;
-    let lazy_world = reader.read_lazy::<WorldState>()?;
+    let file_handle = Parcode::open(path_par.path())?;
+    let lazy_world = file_handle.root::<WorldState>()?;
     let t_par_open = t_start.elapsed();
     let mem_par_open = ALLOCATOR.peak();
 

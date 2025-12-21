@@ -19,6 +19,7 @@ struct ExecutionContext<'a, 'graph, W: Write + Send> {
     graph: &'graph TaskGraph<'a>, // The graph holds data living for 'a
     writer: &'graph SeqWriter<W>,
     registry: &'graph CompressorRegistry,
+    use_compression: bool,
     abort_flag: AtomicBool,
     error_capture: Mutex<Option<ParcodeError>>,
     root_result: Mutex<Option<ChildRef>>,
@@ -55,12 +56,14 @@ pub fn execute_graph<'a, W: Write + Send>(
     graph: &TaskGraph<'a>,
     writer: &SeqWriter<W>,
     registry: &CompressorRegistry,
+    use_compression: bool,
 ) -> Result<ChildRef> {
     // 1. Setup the shared context.
     let ctx = ExecutionContext {
         graph,
         writer,
         registry,
+        use_compression,
         abort_flag: AtomicBool::new(false),
         error_capture: Mutex::new(None),
         root_result: Mutex::new(None),
@@ -126,6 +129,7 @@ pub fn execute_graph_sync<'a, W: Write + Send>(
     graph: &TaskGraph<'a>,
     writer: SeqWriter<W>,
     registry: &CompressorRegistry,
+    use_compression: bool,
 ) -> Result<ChildRef> {
     // 1. Bypass the Mutex lock. We own the writer now.
     let mut raw_writer = writer.into_inner()?;
@@ -186,7 +190,12 @@ pub fn execute_graph_sync<'a, W: Write + Send>(
         shared_buffer.clear();
 
         let config = node.job.config();
-        let compressor = registry.get(config.compression_id)?;
+        let compression_id = if use_compression && config.compression_id == 0 {
+            1 // Default to LZ4
+        } else {
+            config.compression_id
+        };
+        let compressor = registry.get(compression_id)?;
 
         let footer_size = if is_chunkable {
             (children_refs.len() * ChildRef::SIZE) + 4
@@ -312,7 +321,13 @@ fn process_node<'scope, 'a, W: Write + Send>(
     let config = node.job.config();
 
     // 2. Find Algorithm
-    let compressor = match ctx.registry.get(config.compression_id) {
+    let compression_id = if ctx.use_compression && config.compression_id == 0 {
+        1 // Default to LZ4
+    } else {
+        config.compression_id
+    };
+
+    let compressor = match ctx.registry.get(compression_id) {
         Ok(c) => c,
         Err(e) => {
             ctx.signal_error(e);

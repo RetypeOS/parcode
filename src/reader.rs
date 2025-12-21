@@ -66,7 +66,7 @@
 //! ### [`ParcodeNative`]
 //!
 //! Types implementing this trait know how to reconstruct themselves from a [`ChunkNode`].
-//! The high-level API ([`Parcode::read`](crate::Parcode::read)) uses this trait to
+//! The high-level API ([`Parcode::load`](crate::Parcode::load)) uses this trait to
 //! automatically select the optimal reconstruction strategy:
 //!
 //! - **`Vec<T>`:** Uses parallel reconstruction across shards
@@ -89,14 +89,14 @@
 //! // Load entire object into memory
 //! let data = vec![1, 2, 3];
 //! Parcode::save("numbers_reader.par", &data).unwrap();
-//! let data: Vec<i32> = Parcode::read("numbers_reader.par").unwrap();
+//! let data: Vec<i32> = Parcode::load("numbers_reader.par").unwrap();
 //! # std::fs::remove_file("numbers_reader.par").ok();
 //! ```
 //!
 //! ### Lazy Loading (On-Demand)
 //!
 //! ```rust
-//! use parcode::{Parcode, ParcodeReader, ParcodeObject};
+//! use parcode::{Parcode, ParcodeFile, ParcodeObject};
 //! use serde::{Serialize, Deserialize};
 //!
 //! #[derive(Serialize, Deserialize, ParcodeObject)]
@@ -115,8 +115,8 @@
 //! let state = GameState { level: 1, assets: Assets { data: vec![0; 10] } };
 //! Parcode::save("game_reader.par", &state).unwrap();
 //!
-//! let reader = ParcodeReader::open("game_reader.par").unwrap();
-//! let game_lazy = reader.read_lazy::<GameState>().unwrap();
+//! let file = ParcodeFile::open("game_reader.par").unwrap();
+//! let game_lazy = file.root::<GameState>().unwrap();
 //!
 //! // Access local fields (instant, already in memory)
 //! println!("Level: {}", game_lazy.level);
@@ -129,7 +129,7 @@
 //! ### Random Access
 //!
 //! ```rust
-//! use parcode::{Parcode, ParcodeReader, ParcodeObject};
+//! use parcode::{Parcode, ParcodeFile, ParcodeObject};
 //! use serde::{Serialize, Deserialize};
 //!
 //! #[derive(Serialize, Deserialize, ParcodeObject, Clone, Debug)]
@@ -139,19 +139,19 @@
 //! let data: Vec<MyStruct> = (0..100).map(|i| MyStruct { val: i }).collect();
 //! Parcode::save("data_random.par", &data).unwrap();
 //!
-//! let reader = ParcodeReader::open("data_random.par").unwrap();
-//! let root = reader.root().unwrap();
+//! let file = ParcodeFile::open("data_random.par").unwrap();
+//! let root = file.root_node().unwrap();
 //!
 //! // Get item at index 50 without loading the entire vector
 //! // Note: Using 50 instead of 1,000,000 for a realistic small test
-//! let item: MyStruct = root.decode_parallel_collection::<MyStruct>().unwrap().get(50).unwrap().clone();
+//! let item: MyStruct = root.get::<MyStruct>(50).unwrap();
 //! # std::fs::remove_file("data_random.par").ok();
 //! ```
 //!
 //! ### Streaming Iteration
 //!
 //! ```rust
-//! use parcode::{Parcode, ParcodeReader, ParcodeObject};
+//! use parcode::{Parcode, ParcodeFile, ParcodeObject};
 //! use serde::{Serialize, Deserialize};
 //!
 //! #[derive(Serialize, Deserialize, ParcodeObject, Clone, Debug)]
@@ -163,8 +163,8 @@
 //! let data: Vec<MyStruct> = (0..10).map(|i| MyStruct { val: i }).collect();
 //! Parcode::save("data_iter.par", &data).unwrap();
 //!
-//! let reader = ParcodeReader::open("data_iter.par").unwrap();
-//! let root = reader.root().unwrap();
+//! let file = ParcodeFile::open("data_iter.par").unwrap();
+//! let root = file.root_node().unwrap();
 //!
 //! // Note: The current API doesn't have a direct `iter` on root for Vecs yet,
 //! // it usually goes through read_lazy or decode.
@@ -187,7 +187,7 @@
 //!
 //! ## Thread Safety
 //!
-//! - **[`ParcodeReader`]:** Cheap to clone (Arc-based), safe to share across threads
+//! - **[`ParcodeFile`]:** Cheap to clone (Arc-based), safe to share across threads
 //! - **[`ChunkNode`]:** Immutable view, safe to share across threads
 //! - **Parallel Reconstruction:** Uses Rayon's work-stealing scheduler
 //!
@@ -249,19 +249,19 @@ use crate::rt::ParcodeLazyRef;
 /// // Automatically selects parallel reconstruction for Vec
 /// let data = vec![1, 2, 3];
 /// Parcode::save("numbers_native.par", &data).unwrap();
-/// let data: Vec<i32> = Parcode::read("numbers_native.par").unwrap();
+/// let data: Vec<i32> = Parcode::load("numbers_native.par").unwrap();
 ///
 /// // Automatically selects sequential deserialization for primitives
 /// let val = 42;
 /// Parcode::save("value_native.par", &val).unwrap();
-/// let value: i32 = Parcode::read("value_native.par").unwrap();
+/// let value: i32 = Parcode::load("value_native.par").unwrap();
 /// # std::fs::remove_file("numbers_native.par").ok();
 /// # std::fs::remove_file("value_native.par").ok();
 /// ```
 pub trait ParcodeNative: Sized {
     /// Reconstructs the object from the given graph node.
     ///
-    /// This method is called by [`Parcode::read`](crate::Parcode::read) after opening the
+    /// This method is called by [`Parcode::load`](crate::Parcode::load) after opening the
     /// file and locating the root chunk. Implementations should choose the most efficient
     /// reconstruction strategy for their type.
     ///
@@ -487,13 +487,14 @@ where
 
 // --- CORE READER HANDLE ---
 
-/// The main handle for an open Parcode file.
+/// Represents an open Parcode file mapped in memory.
 ///
-/// It holds the memory map (thread-safe via Arc), the global file header,
-/// and the registry of available decompression algorithms.
-/// Cloning this struct is cheap (increments Arc ref count).
+/// This handle allows:
+/// - Eager loading of the full data (`load`).
+/// - Lazy access to the root structure (`root`).
+/// - Structural inspection (`inspect`).
 #[derive(Debug)]
-pub struct ParcodeReader {
+pub struct ParcodeFile {
     /// Memory-mapped file content.
     mmap: Arc<Mmap>,
     /// Parsed global footer/header information.
@@ -504,7 +505,7 @@ pub struct ParcodeReader {
     registry: CompressorRegistry,
 }
 
-impl ParcodeReader {
+impl ParcodeFile {
     /// Opens a Parcode file, maps it into memory, and validates integrity.
     ///
     /// # Errors
@@ -590,17 +591,65 @@ impl ParcodeReader {
         })
     }
 
+    /// Fully deserializes the file content into memory (Eager).
+    ///
+    /// This is the equivalent of `Parcode::load()`, but on an already open file.
+    pub fn load<T: ParcodeNative>(&self) -> Result<T> {
+        let root = self.root_node()?;
+        T::from_node(&root)
+    }
+
+    /// Returns a Lazy Mirror of the root object.
+    ///
+    /// This operation is instant (O(1)) and incurs no I/O overhead.
+    /// Data is only loaded when specific fields are accessed on the returned mirror.
+    pub fn root<'a, T>(&'a self) -> Result<T::Lazy>
+    where
+        T: ParcodeLazyRef<'a>,
+    {
+        let root = self.root_node()?;
+        T::create_lazy(root)
+    }
+
+    /// Alias for `root()` for users who prefer explicit naming.
+    #[inline]
+    pub fn load_lazy<'a, T>(&'a self) -> Result<T::Lazy>
+    where
+        T: ParcodeLazyRef<'a>,
+    {
+        self.root::<T>()
+    }
+
+    /// Alias for `root()` for backward compatibility.
+    #[inline]
+    pub fn read_lazy<'a, T>(&'a self) -> Result<T::Lazy>
+    where
+        T: ParcodeLazyRef<'a>,
+    {
+        self.root::<T>()
+    }
+
+    /// Generates a structural inspection report of the file.
+    pub fn inspect(&self) -> Result<crate::inspector::DebugReport> {
+        crate::inspector::ParcodeInspector::inspect_file(self)
+    }
+
+    /// Returns the total size of the file in bytes.
+    pub fn file_size(&self) -> u64 {
+        self.file_size
+    }
+
+    /// Internal helper to get the root chunk node.
+    pub fn root_node(&self) -> Result<ChunkNode<'_>> {
+        self.get_chunk(self.header.root_offset, self.header.root_length)
+    }
+
     /// Helper to read a u32 from a byte slice (Little Endian).
     fn read_u32(slice: &[u8]) -> Result<u32> {
         slice
             .try_into()
             .map(u32::from_le_bytes)
             .map_err(|_| ParcodeError::Format("Failed to read u32".into()))
-    }
-
-    /// Returns a cursor to the Root Chunk of the object graph.
-    pub fn root(&self) -> Result<ChunkNode<'_>> {
-        self.get_chunk(self.header.root_offset, self.header.root_length)
     }
 
     /// Internal: Resolves a physical offset/length into a `ChunkNode`.
@@ -661,18 +710,6 @@ impl ParcodeReader {
             payload_end_offset: offset + (payload_end as u64 - offset),
         })
     }
-
-    /// Reads an object lazily, returning a generated Mirror struct.
-    /// This parses local fields immediately but keeps remote fields as handles.
-    ///
-    /// The returned Lazy object is tied to the lifetime of the `ParcodeReader`.
-    pub fn read_lazy<'a, T>(&'a self) -> Result<T::Lazy>
-    where
-        T: ParcodeLazyRef<'a>,
-    {
-        let root = self.root()?;
-        T::create_lazy(root)
-    }
 }
 
 // --- CHUNK NODE API ---
@@ -683,7 +720,7 @@ impl ParcodeReader {
 /// It is a "view" into the `ParcodeReader` and holds a lifetime reference to it.
 #[derive(Debug, Clone)]
 pub struct ChunkNode<'a> {
-    reader: &'a ParcodeReader,
+    reader: &'a ParcodeFile,
     /// Physical start offset.
     offset: u64,
     /// Total physical length.
