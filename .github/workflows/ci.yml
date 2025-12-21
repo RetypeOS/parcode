@@ -76,4 +76,4 @@ jobs:
         run: cargo build --verbose --all-features
 
       - name: Run tests
-        run: cargo test --verbose --all-features
+        run: cargo test --verbose --all-targets --all-features
