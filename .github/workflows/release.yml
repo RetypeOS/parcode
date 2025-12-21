@@ -49,14 +49,6 @@ jobs:
             --title "Release $VERSION" \
             --generate-notes
 
-      # ========================================================================
-      # FUTURE: PUBLISH TO CRATES.IO
-      # ========================================================================
-      # To enable this, you need to:
-      # 1. Get an API token from https://crates.io/settings/tokens
-      # 2. Add it to GitHub Secrets as CRATES_IO_TOKEN
-      # 3. Uncomment the lines below
-      #
       # - name: Publish to crates.io
       #   env:
       #     CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
