@@ -267,8 +267,8 @@ pub use api::{Parcode, ParcodeOptions};
 pub use error::{ParcodeError, Result};
 pub use reader::{ParcodeFile, ParcodeItem, ParcodeNative};
 
-// Re-export the derive macro so it is accessible as `parcode::ParcodeObject`
 pub use parcode_derive::ParcodeObject;
+pub use rt::{ParcodeCollectionPromise, ParcodeMapPromise, ParcodePromise};
 
 /// Constants used throughout the library.
 pub mod constants {

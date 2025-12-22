@@ -1,5 +1,3 @@
-// src/inspector.rs
-
 //! Tools for inspecting the physical structure of Parcode files.
 //!
 //! This module provides the [`ParcodeInspector`] tool, which can analyze a Parcode file

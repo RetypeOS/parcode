@@ -6,13 +6,12 @@ use crate::format::ChildRef;
 use crate::graph::{JobConfig, SerializationJob};
 use crate::reader::{ChunkNode, ParcodeItem};
 use serde::de::DeserializeOwned;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::io::Cursor;
 use std::marker::PhantomData;
 use std::vec::IntoIter;
-
-// --- EXISTING CONFIG WRAPPER ---
 
 /// Wrapper that injects configuration into an existing Job.
 #[derive(Debug)]
@@ -45,8 +44,6 @@ impl<'a, J: SerializationJob<'a> + ?Sized> SerializationJob<'a> for ConfiguredJo
         self.config
     }
 }
-
-// --- NEW LAZY MIRROR INFRASTRUCTURE ---
 
 /// Trait implemented by types that support Lazy Mirroring.
 ///
@@ -123,9 +120,21 @@ impl<'a, T: ParcodeItem + Send + Sync + 'a> ParcodeCollectionPromise<'a, T> {
         self.node.get(index)
     }
 
+    /// Returns the number of items in the collection.
+    ///
+    /// This is an O(1) operation that reads the length from the chunk header.
+    pub fn len(&self) -> usize {
+        usize::try_from(self.node.len()).unwrap_or(usize::MAX)
+    }
+
+    /// Returns true if the collection has no items.
+    pub fn is_empty(&self) -> bool {
+        self.node.is_empty()
+    }
+
     /// Returns a streaming iterator.
     pub fn iter(&self) -> Result<impl Iterator<Item = Result<T>> + 'a> {
-        self.node.clone().iter()
+        self.node.clone().iter() // TODO: This must be checked to optimize.
     }
 }
 
@@ -161,6 +170,33 @@ where
 
         // 4. Read the target item as Lazy
         T::read_lazy_from_stream(&mut cursor, &mut children_iter)
+    }
+
+    /// Returns the first item as a lazy mirror, or None if empty.
+    pub fn first(&self) -> Result<Option<T::Lazy>> {
+        if self.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(self.get_lazy(0)?))
+        }
+    }
+
+    /// Returns the last item as a lazy mirror, or None if empty.
+    pub fn last(&self) -> Result<Option<T::Lazy>> {
+        let len = self.len();
+        if len == 0 {
+            Ok(None)
+        } else {
+            Ok(Some(self.get_lazy(len - 1)?))
+        }
+    }
+
+    /// Returns a lazy streaming iterator over the collection.
+    ///
+    /// This is highly efficient: it loads shards sequentially and processes items
+    /// without re-reading bytes. Ideal for scanning large datasets.
+    pub fn iter_lazy(&self) -> Result<ParcodeLazyIterator<'a, T>> {
+        ParcodeLazyIterator::new(self.node.clone())
     }
 }
 
@@ -548,6 +584,123 @@ where
     }
 }
 
+/// Streaming iterator for lazy collections.
+///
+/// This iterator efficiently traverses the shards of a vector, maintaining
+/// a cursor position to avoid re-parsing previous items.
+#[derive(Debug)]
+pub struct ParcodeLazyIterator<'a, T: ParcodeLazyRef<'a>> {
+    /// The shards (children of the container node).
+    shards: std::vec::IntoIter<ChunkNode<'a>>,
+
+    /// Decompressed payload of the active shard.
+    current_payload: Option<Cow<'a, [u8]>>,
+    /// Current position in the payload buffer (bytes).
+    current_pos: u64,
+    /// Iterator over the active shard's children (nested chunks).
+    current_children: std::vec::IntoIter<ChunkNode<'a>>,
+    /// How many items are left to read in this shard.
+    items_left_in_shard: u64,
+
+    total_items: usize,
+    items_yielded: usize,
+
+    _marker: PhantomData<T>,
+}
+
+impl<'a, T: ParcodeLazyRef<'a>> ParcodeLazyIterator<'a, T> {
+    pub fn new(node: ChunkNode<'a>) -> Result<Self> {
+        let total_items = usize::try_from(node.len()).unwrap_or(usize::MAX);
+        let shards = node.children()?.into_iter();
+
+        Ok(Self {
+            shards,
+            current_payload: None,
+            current_pos: 0,
+            current_children: Vec::new().into_iter(),
+            items_left_in_shard: 0,
+            total_items,
+            items_yielded: 0,
+            _marker: PhantomData,
+        })
+    }
+
+    /// Advances to the next shard if the current one is exhausted.
+    fn ensure_shard_loaded(&mut self) -> Result<bool> {
+        if self.items_left_in_shard > 0 {
+            return Ok(true);
+        }
+
+        // Current shard finished. Load next.
+        if let Some(shard_node) = self.shards.next() {
+            // 1. Load Payload
+            let payload = shard_node.read_raw()?;
+
+            // 2. Load Children
+            let children = shard_node.children()?;
+
+            // 3. Reset State
+            // Read length prefix (standard for Parcode slice serialization)
+            let mut cursor = Cursor::new(payload.as_ref());
+            let len: u64 =
+                bincode::serde::decode_from_std_read(&mut cursor, bincode::config::standard())
+                    .map_err(|e| crate::ParcodeError::Serialization(e.to_string()))?;
+
+            self.current_pos = cursor.position();
+            self.items_left_in_shard = len;
+            self.current_payload = Some(payload);
+            self.current_children = children.into_iter();
+
+            Ok(true)
+        } else {
+            Ok(false) // No more shards
+        }
+    }
+}
+
+impl<'a, T: ParcodeLazyRef<'a>> Iterator for ParcodeLazyIterator<'a, T> {
+    type Item = Result<T::Lazy>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // 1. Ensure we have data
+        match self.ensure_shard_loaded() {
+            Ok(true) => {}
+            Ok(false) => return None, // End of iteration
+            Err(e) => return Some(Err(e)),
+        }
+
+        // 2. Prepare Cursor at current position
+        let payload = self
+            .current_payload
+            .as_ref()
+            .expect("ensure_shard_loaded guaranteed payload");
+        let mut cursor = Cursor::new(payload.as_ref());
+        cursor.set_position(self.current_pos);
+
+        // 3. Deserialize ONE item (Lazy)
+        // This advances the cursor and the children iterator
+        let result = T::read_lazy_from_stream(&mut cursor, &mut self.current_children);
+
+        // 4. Update State
+        self.current_pos = cursor.position();
+        self.items_left_in_shard -= 1;
+        self.items_yielded += 1;
+
+        Some(result)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.total_items - self.items_yielded;
+        (remaining, Some(remaining))
+    }
+}
+
+impl<'a, T: ParcodeLazyRef<'a>> ExactSizeIterator for ParcodeLazyIterator<'a, T> {
+    fn len(&self) -> usize {
+        self.total_items - self.items_yielded
+    }
+}
+
 // --- BLANKET IMPLEMENTATIONS FOR PRIMITIVES ---
 
 macro_rules! impl_lazy_primitive {
@@ -563,10 +716,6 @@ macro_rules! impl_lazy_primitive {
                     _: &mut Cursor<&[u8]>,
                     children: &mut IntoIter<ChunkNode<'a>>,
                 ) -> Result<Self::Lazy> {
-                    // If a primitive is accessed via read_lazy_from_stream, it MUST be a chunkable field
-                    // (child node), because inline primitives in a Vec are accessed via .get().
-                    // The macro generates calls to this for fields in `remotes`.
-
                     let child_node = children.next().ok_or_else(|| {
                         crate::ParcodeError::Format("Missing child node for chunkable primitive field".into())
                     })?;
@@ -591,10 +740,6 @@ impl<'a, T: ParcodeItem + Send + Sync + 'static> ParcodeLazyRef<'a> for Vec<T> {
         _: &mut Cursor<&[u8]>,
         children: &mut IntoIter<ChunkNode<'a>>,
     ) -> Result<Self::Lazy> {
-        // When a Vec<T> is encountered INSIDE another struct's stream (inline),
-        // it means it's a child node reference.
-        // We consume one child node from the iterator and wrap it.
-
         let child_node = children.next().ok_or_else(|| {
             crate::ParcodeError::Format("Missing child node for Vec field".into())
         })?;
