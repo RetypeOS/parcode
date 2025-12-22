@@ -22,11 +22,11 @@ struct Root {
 fn test_lazy_iterator_robust() {
     // 1. Setup data
     let mut items = Vec::new();
-    for i in 0..100 {
+    for i in 0u32..100 {
         items.push(HeavyItem {
-            id: i as u32,
+            id: i,
             name: format!("Item {}", i),
-            data: vec![i as u8; 10],
+            data: vec![u8::try_from(i).expect("i fits in u8"); 10],
         });
     }
     let root = Root {
@@ -53,7 +53,10 @@ fn test_lazy_iterator_robust() {
         .expect("first() failed")
         .expect("first() returned None");
     assert_eq!(first_lazy.id, 0); // Inlined
-    assert_eq!(first_lazy.name.load().unwrap(), "Item 0"); // Chunkable
+    assert_eq!(
+        first_lazy.name.load().expect("Failed to load name"),
+        "Item 0"
+    ); // Chunkable
     assert_eq!(first_lazy.data.len(), 10); // Chunkable collection
 
     let last_lazy = items_promise
@@ -61,7 +64,10 @@ fn test_lazy_iterator_robust() {
         .expect("last() failed")
         .expect("last() returned None");
     assert_eq!(last_lazy.id, 99);
-    assert_eq!(last_lazy.name.load().unwrap(), "Item 99");
+    assert_eq!(
+        last_lazy.name.load().expect("Failed to load name"),
+        "Item 99"
+    );
     assert_eq!(last_lazy.data.len(), 10);
 
     // 5. Test Iterator
@@ -84,14 +90,17 @@ fn test_lazy_iterator_robust() {
             .next()
             .expect("Iterator ended prematurely")
             .expect("Item load failed");
-        assert_eq!(item_lazy.id, i as u32);
-        assert_eq!(item_lazy.name.load().unwrap(), format!("Item {}", i));
+        assert_eq!(item_lazy.id, u32::try_from(i).expect("i fits in u32"));
+        assert_eq!(
+            item_lazy.name.load().expect("Failed to load name"),
+            format!("Item {}", i)
+        );
         assert_eq!(item_lazy.data.len(), 10);
     }
 
     // End of iteration
     assert_eq!(iter.len(), 0);
-    assert_eq!(iter.next().is_none(), true);
+    assert!(iter.next().is_none());
 }
 
 #[test]
@@ -107,8 +116,8 @@ fn test_empty_collection_lazy() {
 
     assert_eq!(items_promise.len(), 0);
     assert!(items_promise.is_empty());
-    assert!(items_promise.first().unwrap().is_none());
-    assert!(items_promise.last().unwrap().is_none());
+    assert!(items_promise.first().expect("first() failed").is_none());
+    assert!(items_promise.last().expect("last() failed").is_none());
 
     let mut iter = items_promise.iter_lazy().expect("iter_lazy() failed");
     assert_eq!(iter.len(), 0);
@@ -118,11 +127,11 @@ fn test_empty_collection_lazy() {
 #[test]
 fn test_get_lazy_random_access() {
     let mut items = Vec::new();
-    for i in 0..50 {
+    for i in 0u32..50 {
         items.push(HeavyItem {
-            id: i as u32,
+            id: i,
             name: format!("Item {}", i),
-            data: vec![i as u8; 5],
+            data: vec![u8::try_from(i).expect("i fits in u8"); 5],
         });
     }
     let root = Root { items };
@@ -138,8 +147,11 @@ fn test_get_lazy_random_access() {
     let indices = [0, 10, 25, 49];
     for &idx in &indices {
         let item_lazy = items_promise.get_lazy(idx).expect("get_lazy failed");
-        assert_eq!(item_lazy.id, idx as u32);
-        assert_eq!(item_lazy.name.load().unwrap(), format!("Item {}", idx));
+        assert_eq!(item_lazy.id, u32::try_from(idx).expect("idx fits in u32"));
+        assert_eq!(
+            item_lazy.name.load().expect("Failed to load name"),
+            format!("Item {}", idx)
+        );
         assert_eq!(item_lazy.data.len(), 5);
     }
 }
@@ -185,9 +197,17 @@ fn test_map_lazy_access() {
             .get_lazy(&i)
             .expect("get_lazy failed")
             .expect("Value not found");
-        assert_eq!(val_lazy.content.load().unwrap(), format!("Value {}", i));
+        assert_eq!(
+            val_lazy.content.load().expect("Failed to load content"),
+            format!("Value {}", i)
+        );
     }
 
     // Test non-existent key
-    assert!(map_promise.get_lazy(&100).unwrap().is_none());
+    assert!(
+        map_promise
+            .get_lazy(&100)
+            .expect("get_lazy failed")
+            .is_none()
+    );
 }
