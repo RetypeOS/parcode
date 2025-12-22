@@ -6,14 +6,7 @@ authors = ["RetypeOS"]
 description = "A high-performance, lazy load and parallelized caching library for complex Rust data structures."
 repository = "https://github.com/retypeos/parcode"
 readme = "README.md"
-keywords = [
-    "parallel",
-    "performance",
-    "storage",
-    "sharding",
-    "lazy",
-    "zero-copy",
-]
+keywords = ["parallel", "performance", "storage", "sharding", "lazy"]
 categories = ["concurrency", "filesystem", "data-structures"]
 license = "MIT"
 
