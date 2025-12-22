@@ -9,7 +9,10 @@
 
 **High-performance, zero-copy, lazy-loading object storage for Rust.**
 
-`parcode` is an architecture-aware storage system designed for complex, deep data structures. Unlike traditional serialization (JSON, Bincode) which treats data as a flat blob, `parcode` preserves the **structure** of your objects on disk.
+Parcode is a Rust persistence library designed for **true lazy access**.
+
+It lets you open massive object graphs and access a single field, record,
+or asset without deserializing the rest of the file.
 
 This enables capabilities previously reserved for complex databases:
 
@@ -34,6 +37,8 @@ We invented a technique we call **"Compile-Time Structural Mirroring (CTSM)"**. 
 | **Build Process**        | Requires external CLI (`flatc`) | **Standard `cargo build`** |
 | **Refactoring**          | Manual sync across files        | **IDE Rename / Refactor**  |
 | **Developer Experience** | Foreign                         | **Native**                 |
+
+More info in the [whitpaper](whitepaper.md).
 
 ## Installation
 
@@ -69,10 +74,10 @@ struct GameWorld {
     id: u64,               // Stored Inline (Metadata)
     name: String,          // Stored Inline (Metadata)
 
-    #[parcode(chunkable)]  // Stored in a separate, compressed chunk
+    #[parcode(chunkable)]  // Stored in a separate chunk
     settings: WorldSettings,
 
-    #[parcode(chunkable)]  // Automatically sharded into parallel chunks
+    #[parcode(chunkable, compression = 'lz4_flex')]  // Automatically sharded into parallel chunks and compress it.
     terrain: Vec<u8>, 
     
     #[parcode(map)]        // Hash-sharded for O(1) lookups
@@ -106,15 +111,15 @@ use parcode::Parcode;
 
 let world = GameWorld { /* ... */ };
 
-// Saves with parallelism enabled, no compression
+// Saves with parallelism enabled
 Parcode::save("savegame.par", &world)?;
 ```
 
-**B. Configured Save (Production)**
-Use the builder to enable compression or write to arbitrary streams.
+**B. Configured Save**
+Use the builder mode.
 
 ```rust
-// Saves with LZ4 compression enabled
+// Saves with LZ4 compression enabled to all metadata.
 Parcode::builder()
     .compression(true)
     .write("savegame_compressed.par", &world)?;
@@ -125,14 +130,14 @@ Parcode::builder()
 Here is where the magic happens. We don't load the object; we load a **Mirror**.
 
 ```rust
-use parcode::ParcodeReader;
+use parcode::Parcode;
 
 // 1. Open the file (Instant, uses mmap)
-let reader = ParcodeReader::open("savegame.par")?;
+let reader = Parcode::open("savegame.par")?;
 
 // 2. Get the Lazy Mirror (Instant, reads only header)
 // Note: We get 'GameWorldLazy', a generated shadow struct.
-let world_mirror = reader.root::<GameWorld>()?;
+let world_mirror = reader.root::<GameWorld>()?; // Or .load_lazy(), is the same.
 
 // 3. Access local fields directly (Already in memory)
 println!("World ID: {}", world_mirror.id);
@@ -213,14 +218,14 @@ Parcode::builder()
     .write_sync("sync_save.par", &data)?;
 ```
 
-### Forensic Inspector
+### Inspector
 
 Parcode includes tools to analyze the structure of your files without deserializing them.
 
 ```rust
-use parcode::inspector::ParcodeInspector;
+use parcode::Parcode;
 
-let report = ParcodeInspector::inspect("savegame.par")?;
+let report = Parcode::inspect("savegame.par")?;
 println!("{}", report);
 ```
 
@@ -241,12 +246,12 @@ Root Offset:    550368
 
 Control exactly how your data structure maps to disk using `#[parcode(...)]`.
 
-| Attribute | Effect | Best For |
-| :--- | :--- | :--- |
-| **(none)** | Field is serialized into the parent's payload. | Small primitives (`u32`, `bool`), short Strings, flags. |
-| `#[parcode(chunkable)]` | Field is stored in its own independent Chunk. | Structs, Vectors, or fields you want to load lazily (`.load()`). |
-| `#[parcode(map)]` | Field (`HashMap`) is sharded by hash. | Large Dictionaries/Indices where you need random access (`.get()`). |
-| `#[parcode(compression="lz4")]` | Overrides compression for this chunk. | Highly compressible data (text, save states). |
+|             Attribute           |                     Effect                     |            Best For                                |
+| :------------------------------ | :--------------------------------------------- | :--------------------------------- |
+| **(none)**                      | Field is serialized into the parent's payload. | Small primitives (`u32`, `bool`), short Strings, flags.              |
+| `#[parcode(chunkable)]`         | Field is stored in its own independent Chunk.  | Structs, Vectors, or fields you want to load lazily (`.load()`).   |
+| `#[parcode(map)]`               | Field (`HashMap`) is sharded by hash.          | Large Dictionaries/Indices where you need random access (`.get()`). |
+| `#[parcode(compression="lz4")]` | Overrides compression for this chunk.          | Highly compressible data (text, save states).                      |
 
 ---
 
