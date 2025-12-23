@@ -208,6 +208,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs::File;
 use std::hash::Hash;
+use std::io::Cursor;
 use std::marker::PhantomData;
 use std::mem::{ManuallyDrop, MaybeUninit};
 use std::path::Path;
@@ -798,7 +799,7 @@ impl<'a> ChunkNode<'a> {
     /// To ensure safety:
     /// 1. We pre-calculate correct offsets using RLE metadata.
     /// 2. We cast the buffer pointer to `usize` to safely pass it to Rayon threads.
-    /// 3. **CRITICAL:** We verify that the number of items read from a shard matches
+    /// 3. We verify that the number of items read from a shard matches
     ///    the RLE expectation (`expected_count`). If not, we abort before writing,
     ///    preventing partial initialization UB.
     pub fn decode_parallel_collection<T>(&self) -> Result<Vec<T>>
@@ -859,32 +860,29 @@ impl<'a> ChunkNode<'a> {
             return Ok(Vec::new());
         }
 
-        // 3. Allocate uninitialized buffer
+        // 3. Allocate Uninit Buffer
         let mut result_buffer: Vec<MaybeUninit<T>> = Vec::with_capacity(total_items);
 
-        // SAFETY: We create a "hole" in memory. We MUST fill every slot before converting to Vec<T>.
         #[allow(unsafe_code)]
         unsafe {
             result_buffer.set_len(total_items);
         }
 
-        // 4. Perform parallel stitching
-        // SAFETY: Cast pointer to usize to pass it safely to Rayon threads (usize is Send+Sync).
-        // This is safe because threads write to mathematically disjoint regions (start_idx).
-        let buffer_addr = result_buffer.as_mut_ptr() as usize;
+        // 4. Prepare Pointer as usize to safely pass to Rayon threads (Send + Sync)
+        let buffer_start_addr = result_buffer.as_mut_ptr().addr();
 
         shard_jobs.into_par_iter().try_for_each(
             move |(shard_idx, start_idx, expected_count)| -> Result<()> {
                 let shard_node = self.get_child_by_index(shard_idx)?;
                 let payload = shard_node.read_raw()?;
-                let mut cursor = std::io::Cursor::new(payload.as_ref());
+                let mut cursor = Cursor::new(payload.as_ref());
                 let children = shard_node.children()?;
                 let mut child_iter = children.into_iter();
 
-                let items: Vec<T> = T::read_slice_from_shard(&mut cursor, &mut child_iter)?;
+                let mut items: Vec<T> = T::read_slice_from_shard(&mut cursor, &mut child_iter)?;
                 let count = items.len();
 
-                // CRITICAL SAFETY CHECK:
+                // Safety Checks
                 // Verify shard integrity before touching the shared buffer.
                 if count != expected_count {
                     return Err(ParcodeError::Format(format!(
@@ -899,29 +897,25 @@ impl<'a> ChunkNode<'a> {
                     ));
                 }
 
-                // Prevent double‑free of the source items
-                let src_items = ManuallyDrop::new(items);
-
                 #[allow(unsafe_code)]
                 unsafe {
-                    // Reconstruct pointers
-                    let dest_base = buffer_addr as *mut MaybeUninit<T>;
-                    let dest_uninit = dest_base.add(start_idx);
+                    let base_ptr =
+                        std::ptr::with_exposed_provenance_mut::<MaybeUninit<T>>(buffer_start_addr);
 
-                    // Cast MaybeUninit<T> -> T (Layout compatible)
-                    let dest_ptr = dest_uninit as *mut T;
-                    let src_ptr = src_items.as_ptr();
+                    let dest_uninit = base_ptr.add(start_idx);
 
-                    // Efficient copy
+                    let dest_ptr = dest_uninit.cast::<T>();
+                    let src_ptr = items.as_ptr();
+
                     std::ptr::copy_nonoverlapping(src_ptr, dest_ptr, count);
+
+                    items.set_len(0);
                 }
                 Ok(())
             },
         )?;
 
         // 5. Bless the buffer
-        // SAFETY: At this point, try_for_each returned Ok(), so every shard reported
-        // exactly the expected number of items. The buffer is fully initialized.
         #[allow(unsafe_code)]
         let final_vec = unsafe {
             let mut manual_buffer = ManuallyDrop::new(result_buffer);
