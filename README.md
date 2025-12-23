@@ -46,7 +46,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-parcode = "0.4"
+parcode = "0.5"
 ```
 
 To enable LZ4 compression:
