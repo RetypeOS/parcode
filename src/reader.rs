@@ -324,8 +324,8 @@ pub trait ParcodeItem: Sized + Send + Sync + 'static {
         children: &mut std::vec::IntoIter<ChunkNode<'_>>,
     ) -> Result<Self>;
 
-    /// DEPRECATED in favor of read_into_slice internally, but kept for API compat.
-    /// Default impl now delegates to read_into_slice to reduce code duplication.
+    /// DEPRECATED in favor of `read_into_slice` internally, but kept for API compat.
+    /// Default impl now delegates to `read_into_slice` to reduce code duplication.
     fn read_slice_from_shard(
         reader: &mut std::io::Cursor<&[u8]>,
         children: &mut std::vec::IntoIter<ChunkNode<'_>>,
@@ -393,9 +393,9 @@ pub trait ParcodeItem: Sized + Send + Sync + 'static {
         }
 
         // 3. Loop and Initialize
-        for i in 0..count {
+        for slot in destination.iter_mut().take(count) {
             let item = Self::read_from_shard(reader, children)?;
-            destination[i].write(item);
+            slot.write(item);
         }
 
         Ok(count)
@@ -430,13 +430,12 @@ macro_rules! impl_primitive_parcode_item {
 
                     // If T is u8, we can memcpy directly from the reader slice.
                     if std::any::TypeId::of::<Self>() == std::any::TypeId::of::<u8>() {
-                        let pos = reader.position() as usize;
+                        let pos = usize::try_from(reader.position())
+                            .map_err(|_| ParcodeError::Format("Position overflow".into()))?;
                         let inner = reader.get_ref();
-                        if inner.len() < pos + count {
-                            return Err(ParcodeError::Format("Unexpected EOF reading u8 blob".into()));
-                        }
 
-                        let src_slice = &inner[pos..pos+count];
+                        let src_slice = inner.get(pos..pos + count)
+                            .ok_or_else(|| ParcodeError::Format("Unexpected EOF reading u8 blob".into()))?;
 
                         let dest_ptr = destination.as_mut_ptr() as *mut u8;
                         #[allow(unsafe_code)]
@@ -449,10 +448,10 @@ macro_rules! impl_primitive_parcode_item {
                     }
 
                     // Default Primitive Loop
-                    for i in 0..count {
+                    for slot in destination.iter_mut().take(count) {
                         let item: Self = bincode::serde::decode_from_std_read(reader, bincode::config::standard())
                              .map_err(|e| ParcodeError::Serialization(e.to_string()))?;
-                        destination[i].write(item);
+                        slot.write(item);
                     }
                     Ok(count)
                 }
@@ -516,15 +515,28 @@ where
                 continue;
             }
 
-            let count = u32::from_le_bytes(payload.get(0..4).unwrap().try_into().unwrap()) as usize;
+            let count = u32::from_le_bytes(
+                payload
+                    .get(0..4)
+                    .ok_or_else(|| ParcodeError::Format("Payload too short for count".into()))?
+                    .try_into()
+                    .map_err(|_| ParcodeError::Format("Failed to parse count".into()))?,
+            ) as usize;
             let offsets_start = 8 + (count * 8);
             let data_start = offsets_start + (count * 4);
-            let offsets_bytes = payload.get(offsets_start..data_start).unwrap();
+            let offsets_bytes = payload
+                .get(offsets_start..data_start)
+                .ok_or_else(|| ParcodeError::Format("Offsets out of bounds".into()))?;
 
-            for i in 0..count {
-                let off_bytes = offsets_bytes.get(i * 4..(i + 1) * 4).unwrap();
-                let offset = u32::from_le_bytes(off_bytes.try_into().unwrap()) as usize;
-                let data_slice = payload.get(data_start + offset..).unwrap();
+            for off_bytes in offsets_bytes.chunks_exact(4).take(count) {
+                let offset = u32::from_le_bytes(
+                    off_bytes
+                        .try_into()
+                        .map_err(|_| ParcodeError::Format("Failed to parse offset".into()))?,
+                ) as usize;
+                let data_slice = payload
+                    .get(data_start + offset..)
+                    .ok_or_else(|| ParcodeError::Format("Data slice out of bounds".into()))?;
                 let (k, v) =
                     bincode::serde::decode_from_slice(data_slice, bincode::config::standard())
                         .map_err(|e| ParcodeError::Serialization(e.to_string()))?
@@ -864,7 +876,7 @@ impl<'a> ChunkNode<'a> {
             let mut cursor = std::io::Cursor::new(payload.as_ref());
             let children = self.children()?;
             let mut child_iter = children.into_iter();
-            // Use legacy read_slice helper (which internally creates a Vec, acceptable for small inline data)
+            // Use read_slice helper
             return T::read_slice_from_shard(&mut cursor, &mut child_iter);
         }
 
@@ -874,7 +886,7 @@ impl<'a> ChunkNode<'a> {
                 .get(0..8)
                 .ok_or_else(|| ParcodeError::Format("Payload too short".into()))?
                 .try_into()
-                .unwrap(),
+                .map_err(|_| ParcodeError::Format("Failed to parse total items".into()))?,
         ))
         .map_err(|_| ParcodeError::Format("total_items exceeds usize".into()))?;
 
@@ -915,36 +927,34 @@ impl<'a> ChunkNode<'a> {
 
         // 4. Allocate Uninitialized Buffer
         let mut result_buffer: Vec<MaybeUninit<T>> = Vec::with_capacity(total_items);
-        // SAFETY: We strictly control initialization via the parallel loop below.
         unsafe {
             result_buffer.set_len(total_items);
         }
 
-        // 5. Parallel Execution (Destination Passing)
-        // We cast the buffer to a raw usize address to allow sending it to threads.
+        // 5. Parallel Execution
+        // Cast the buffer to a raw usize address to allow sending it to threads.
         // `MaybeUninit` is not implicitly Sync, but since each thread writes to disjoint regions,
         // it is sound.
         let buffer_base_addr = result_buffer.as_mut_ptr() as usize;
 
-        // Note: try_for_each stops on the first error.
         let exec_result = shard_jobs.into_par_iter().try_for_each(
             move |(shard_idx, start_idx, expected_count)| -> Result<()> {
-                // A. Load Chunk
+                // 1. Load Chunk
                 let shard_node = self.get_child_by_index(shard_idx)?;
                 let payload = shard_node.read_raw()?;
                 let mut cursor = Cursor::new(payload.as_ref());
                 let children = shard_node.children()?;
                 let mut child_iter = children.into_iter();
 
-                // B. Construct Mutable Slice Window (SAFETY CRITICAL)
+                // 2. Construct Mutable Slice Window
                 // We recreate the slice reference inside the thread.
-                // Constraint: Only write to [start_idx .. start_idx + expected_count]
+                // start_idx .. start_idx + expected_count
                 let dest_slice = unsafe {
                     let ptr = (buffer_base_addr as *mut MaybeUninit<T>).add(start_idx);
                     slice::from_raw_parts_mut(ptr, expected_count)
                 };
 
-                // C. Decode Direct-to-Memory
+                // 3. Decode Direct-to-Memory
                 let items_read = T::read_into_slice(&mut cursor, &mut child_iter, dest_slice)?;
 
                 if items_read != expected_count {
@@ -961,8 +971,6 @@ impl<'a> ChunkNode<'a> {
         // 6. Handle Result
         match exec_result {
             Ok(_) => {
-                // SAFETY: All shards reported success and wrote their assigned slots.
-                // Total items matches the buffer length. We can safely transmute.
                 let final_vec = unsafe {
                     let mut manual = ManuallyDrop::new(result_buffer);
                     Vec::from_raw_parts(
@@ -974,6 +982,7 @@ impl<'a> ChunkNode<'a> {
                 Ok(final_vec)
             }
             Err(e) => {
+                // TODO: \
                 // MEMORY LEAK WARNING:
                 // If we error here, `result_buffer` (Vec<MaybeUninit>) is dropped.
                 // `MaybeUninit` does NOT drop its payload.
@@ -1014,7 +1023,7 @@ impl<'a> ChunkNode<'a> {
             return Err(ParcodeError::Format("Invalid container payload".into()));
         }
 
-        // Skip total_items (8 bytes)
+        // Skip total_items
         let runs_data = payload.get(8..).unwrap_or(&[]);
         let shard_runs: Vec<ShardRun> =
             bincode::serde::decode_from_slice(runs_data, bincode::config::standard())
@@ -1047,7 +1056,6 @@ impl<'a> ChunkNode<'a> {
 
         let shard_node = self.get_child_by_index(target_shard_idx)?;
 
-        // New logic:
         let payload = shard_node.read_raw()?;
         let mut cursor = std::io::Cursor::new(payload.as_ref());
         let children = shard_node.children()?;
@@ -1128,7 +1136,6 @@ impl<'a> ChunkNode<'a> {
 
             if global_index < current_base + total_run {
                 let offset = global_index - current_base;
-                // Integer division gives logical shard, modulo gives index inside
                 return Ok((shard_base + (offset / count), offset % count));
             }
             current_base += total_run;
@@ -1159,7 +1166,6 @@ impl<'a> ChunkNode<'a> {
 
     /// Calculates the size of the payload (excluding metadata/footer).
     pub fn payload_len(&self) -> u64 {
-        // payload_end_offset is calculated in get_chunk, usually:
         // offset + (payload_end - offset)
         self.payload_end_offset - self.offset
     }
@@ -1226,7 +1232,6 @@ impl<'a, T: ParcodeItem> Iterator for ChunkIterator<'a, T> {
             .container
             .get_child_by_index(self.current_shard_idx)
             .and_then(|node| {
-                // New logic:
                 let payload = node.read_raw()?;
                 let mut cursor = std::io::Cursor::new(payload.as_ref());
                 let children = node.children()?;
@@ -1238,7 +1243,6 @@ impl<'a, T: ParcodeItem> Iterator for ChunkIterator<'a, T> {
             Ok(items) => {
                 self.current_items_in_shard = items.into_iter();
                 self.current_shard_idx += 1;
-                // Recursively call next to yield the first item of the new shard
                 self.next()
             }
             Err(e) => Some(Err(e)),
