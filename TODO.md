@@ -2,7 +2,7 @@
 
 This document tracks pending features, architectural optimizations, and API improvements planned for future versions of Parcode.
 
-## 🟢 High Priority (Immediate - v0.4.x)
+## 🟢 High Priority (Immediate - v0.5.x)
 
 ### 1. Serialization Backend Migration
 

@@ -44,7 +44,6 @@ fn bench_lazy(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("Lazy Access");
 
-    // Caso A: Carga Completa (Estándar)
     group.bench_function("full_load", |b| {
         b.iter(|| {
             let loaded: Root = Parcode::load(&path).expect("Failed to read parcode data");
@@ -52,18 +51,15 @@ fn bench_lazy(c: &mut Criterion) {
         });
     });
 
-    // Caso B: Carga Lazy (Solo metadatos)
     group.bench_function("lazy_meta_only", |b| {
         b.iter(|| {
             let file_handle = Parcode::open(&path).expect("Failed to open file");
             let lazy = file_handle.root::<Root>().expect("Failed to read lazy");
-            // Accedemos a meta profundo A y B
             let sum = lazy.child_a.meta + lazy.child_b.meta;
             black_box(sum);
         });
     });
 
-    // Caso C: Carga Parcial (Meta A + Payload A)
     group.bench_function("lazy_partial_load", |b| {
         b.iter(|| {
             let file_handle = Parcode::open(&path).expect("Failed to open file");
