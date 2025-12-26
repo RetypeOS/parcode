@@ -1,5 +1,3 @@
-//! Integration test suite for Parcode.
-
 #![allow(missing_docs)]
 
 use parcode::{
@@ -12,8 +10,6 @@ use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use tempfile::NamedTempFile;
-
-// --- TEST INFRASTRUCTURE ---
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, ParcodeObject)]
 struct TestUser {
@@ -69,8 +65,6 @@ impl ParcodeVisitor for UserDirectory {
         }
 
         // 2. DELEGATE TO VEC
-        // Here we propagate None, but we could propagate config_override if we wanted the parent's
-        // config to affect the child users.
         self.users.visit(graph, Some(my_id), None);
     }
 
@@ -78,8 +72,6 @@ impl ParcodeVisitor for UserDirectory {
         unreachable!("Not used in root read for UserDirectory mock")
     }
 }
-
-// --- TESTS ---
 
 #[test]
 fn test_primitive_lifecycle() -> Result<()> {
@@ -91,10 +83,8 @@ fn test_primitive_lifecycle() -> Result<()> {
 
     let file = NamedTempFile::new()?;
 
-    // WRITE
     Parcode::save(file.path(), &user)?;
 
-    // READ
     let loaded_user: TestUser = Parcode::load(file.path())?;
 
     assert_eq!(user, loaded_user);

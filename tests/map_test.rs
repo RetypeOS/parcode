@@ -5,11 +5,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tempfile::NamedTempFile;
 
-// Estructura que usa el modo mapa optimizado
 #[derive(Serialize, Deserialize, ParcodeObject)]
 struct UserDatabase {
     id: u32,
-    #[parcode(map, compression = "lz4")] // Activamos modo Mapa y LZ4
+    #[parcode(map, compression = "lz4")]
     users: HashMap<String, UserProfile>,
 }
 
@@ -21,7 +20,7 @@ struct UserProfile {
 
 #[test]
 fn test_optimized_map_access() {
-    // 1. Generar Datos (Suficientes para provocar sharding real)
+    // 1. Generate data
     let mut users = HashMap::new();
     for i in 0..5000 {
         users.insert(
@@ -41,13 +40,13 @@ fn test_optimized_map_access() {
     let file = NamedTempFile::new().expect("Failed to create temp file");
     Parcode::save(file.path(), &db).expect("Failed to save parcode data");
 
-    // 2. Lectura Lazy con Acceso Aleatorio O(1)
+    // 2. Lazy reading with random access O(1)
     let file_handle = Parcode::open(file.path()).expect("Failed to open file");
     let lazy_db = file_handle
         .root::<UserDatabase>()
         .expect("Failed to read lazy");
 
-    // A. Búsqueda Exitosa (Random Access)
+    // 3. Successful search (Random Access)
     let target_key = "user_4242".to_string();
     let profile = lazy_db
         .users
@@ -58,15 +57,14 @@ fn test_optimized_map_access() {
     assert_eq!(profile.level, 4242 % 100);
     assert_eq!(profile.score, 42420);
 
-    // B. Búsqueda Fallida (No existe)
+    // 4. Failed search
     let missing = lazy_db
         .users
         .get(&"admin_root".to_string())
         .expect("Failed to get missing user");
     assert!(missing.is_none());
 
-    // C. Carga Completa (Fallback a Vec<(K,V)> -> HashMap)
-    // El método .load() devuelve el HashMap completo reconstruido
+    // 5. Complete loading (Fallback to Vec<(K,V)> -> HashMap)
     let loaded_map = lazy_db.users.load().expect("Failed to load map");
     assert_eq!(loaded_map.len(), 5000);
     assert_eq!(
