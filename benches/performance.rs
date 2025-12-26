@@ -1,60 +1,24 @@
-// ===== benches\performance.rs =====
 #![allow(missing_docs)]
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use parcode::{Parcode, ParcodeObject, graph::*, visitor::ParcodeVisitor};
+use parcode::{Parcode, ParcodeObject};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::hint::black_box;
 use std::io::BufWriter;
 use tempfile::NamedTempFile;
 
-// --- SETUP ---
-
-#[derive(Clone, Serialize, Deserialize, ParcodeObject)]
+#[derive(Clone, Serialize, Deserialize, ParcodeObject, Debug)]
 struct BenchItem {
     id: u64,
-    payload: Vec<u64>, // 1KB payload
+    #[parcode(chunkable)]
+    payload: Vec<u64>,
 }
 
-// Wrapper to satisfy Parcode traits
-#[derive(Clone, Serialize, Deserialize)]
-struct BenchCollection(Vec<BenchItem>);
-
-// Minimal Manual Implementation for Benchmarking
-impl ParcodeVisitor for BenchCollection {
-    fn visit<'a>(
-        &'a self,
-        graph: &mut TaskGraph<'a>,
-        parent_id: Option<ChunkId>,
-        config_override: Option<JobConfig>,
-    ) {
-        // Delegate to the internal Vec, propagating the configuration
-        self.0.visit(graph, parent_id, config_override);
-    }
-
-    fn create_job<'a>(
-        &'a self,
-        config_override: Option<JobConfig>,
-    ) -> Box<dyn SerializationJob<'a> + 'a> {
-        let base = Box::new(ContainerJob);
-        if let Some(cfg) = config_override {
-            Box::new(parcode::rt::ConfiguredJob::new(base, cfg))
-        } else {
-            base
-        }
-    }
-}
-
-#[derive(Clone)]
-struct ContainerJob;
-impl SerializationJob<'_> for ContainerJob {
-    fn execute(&self, _: &[parcode::format::ChildRef]) -> parcode::Result<Vec<u8>> {
-        Ok(vec![])
-    }
-    fn estimated_size(&self) -> usize {
-        0
-    }
+#[derive(Clone, Serialize, Deserialize, ParcodeObject, Debug)]
+struct BenchCollection {
+    #[parcode(chunkable)]
+    data: Vec<BenchItem>,
 }
 
 fn generate_data(count: usize) -> BenchCollection {
@@ -64,15 +28,15 @@ fn generate_data(count: usize) -> BenchCollection {
             payload: vec![i as u64; 128], // ~1KB
         })
         .collect();
-    BenchCollection(items)
+    BenchCollection { data: items }
 }
 
 // --- BENCHMARKS ---
 
 fn bench_writers(c: &mut Criterion) {
-    let item_count = 200_000;
+    let item_count = 100_000;
     let data = generate_data(item_count);
-    let raw_data = &data.0; // For bincode
+    let raw_data = &data.data; // For bincode
 
     println!("Writers Item count: {}", item_count);
 
@@ -93,7 +57,7 @@ fn bench_writers(c: &mut Criterion) {
         });
     });
 
-    // 2. Parcode (Parallel Graph Engine)
+    // 2. Parcode
     group.bench_function("parcode_save", |b| {
         b.iter(|| {
             let file = NamedTempFile::new().expect("Failed to create temp file");
@@ -105,7 +69,7 @@ fn bench_writers(c: &mut Criterion) {
 }
 
 fn bench_readers(c: &mut Criterion) {
-    let item_count = 200_000;
+    let item_count = 100_000;
 
     println!("Readers Item count: {}", item_count);
 
@@ -114,7 +78,7 @@ fn bench_readers(c: &mut Criterion) {
     // Setup files
     let bincode_file = NamedTempFile::new().expect("Failed to create temp file");
     bincode::serde::encode_into_std_write(
-        &data.0,
+        &data.data,
         &mut BufWriter::new(&bincode_file),
         bincode::config::standard(),
     )
@@ -150,44 +114,34 @@ fn bench_readers(c: &mut Criterion) {
     group.bench_function("parcode_random_access_10", |b| {
         b.iter(|| {
             let file_handle = Parcode::open(&parcode_path).expect("Failed to open file");
-            let root = file_handle.root_node().expect("Failed to get root");
+            let root = file_handle
+                .root::<BenchCollection>()
+                .expect("Failed to get root");
 
-            for i in (0..10).map(|x| x * (item_count / 10)) {
-                let _obj: BenchItem = root.get(i).expect("Failed to get item");
+            for i in (0..10).map(|x| x * (item_count / 20)) {
+                let _obj: BenchItem = root.data.get(i).expect("Failed to get item");
             }
         });
     });
 
-    // 3. Parcode: Full Scan (Manual Shard Iteration)
-    group.bench_function("parcode_full_scan_manual", |b| {
-        b.iter(|| {
-            let file_handle = Parcode::open(&parcode_path).expect("Failed to open file");
-            let root = file_handle.root_node().expect("Failed to get root");
-
-            // Get the Shards (direct children)
-            let shards = root.children().expect("Failed to get children");
-
-            for shard_node in shards {
-                // Deserialize the complete Shard (Vec<BenchItem>)
-                let items: Vec<BenchItem> = shard_node.decode().expect("Failed to decode shard");
-
-                // Iterate items in memory (simulating usage)
-                for item in items {
-                    black_box(item);
-                }
-            }
-        });
-    });
-
-    // 4. Parcode: Parallel Stitching (La nueva joya)
-    // Añadimos esto para probar la velocidad de reconstrucción total
+    // 3. Parcode: Parallel Stitching
     group.bench_function("parcode_read_all_parallel", |b| {
         b.iter(|| {
-            let file_handle = Parcode::open(&parcode_path).expect("Failed to open file");
-            let root = file_handle.root_node().expect("Failed to get root");
-            let _res: Vec<BenchItem> = root
-                .decode_parallel_collection()
-                .expect("Failed to decode parallel");
+            let _res: BenchCollection = Parcode::load(&parcode_path).expect("Failed to open file");
+        });
+    });
+
+    // 4. Parcode: lazy iterator
+    group.bench_function("parcode_read_all_iter", |b| {
+        b.iter(|| {
+            let file = Parcode::open(&parcode_path).expect("Failed to open file");
+            let data = file
+                .load_lazy::<BenchCollection>()
+                .expect("Some error was ocurred");
+            for item in data.data.iter_lazy().expect("Some error was ocurred") {
+                let i = item.expect("Some error was ocurred");
+                black_box(i);
+            }
         });
     });
 
