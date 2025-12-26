@@ -52,12 +52,12 @@ fn test_lazy_iterator_robust() {
         .first()
         .expect("first() failed")
         .expect("first() returned None");
-    assert_eq!(first_lazy.id, 0); // Inlined
+    assert_eq!(first_lazy.id, 0);
     assert_eq!(
         first_lazy.name.load().expect("Failed to load name"),
         "Item 0"
     ); // Chunkable
-    assert_eq!(first_lazy.data.len(), 10); // Chunkable collection
+    assert_eq!(first_lazy.data.len(), 10);
 
     let last_lazy = items_promise
         .last()
