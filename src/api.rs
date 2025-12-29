@@ -85,15 +85,38 @@ impl Parcode {
     }
 
     /// Saves an object to a file with default settings.
+    ///
+    /// **Note:** This method is not available on WASM targets.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn save<T, P>(path: P, root_object: &T) -> Result<()>
     where
         T: ParcodeVisitor + Sync,
         P: AsRef<Path>,
     {
-        ParcodeOptions::default().write(path, root_object)
+        ParcodeOptions::default().save(path, root_object)
     }
 
-    /// Loads an object fully into memory (Eager load).
+    /// PLACEHOLDER
+    pub fn write<T, W>(writer: W, root_object: &T) -> Result<()>
+    where
+        T: ParcodeVisitor + Sync,
+        W: Write + Send,
+    {
+        ParcodeOptions::default().write(writer, root_object)
+    }
+
+    /// PLACEHOLDER
+    pub fn serialize<T>(root_object: &T) -> Result<Vec<u8>>
+    where
+        T: ParcodeVisitor + Sync,
+    {
+        let mut buffer = Vec::with_capacity(4096);
+        Self::write(&mut buffer, root_object)?;
+        Ok(buffer)
+    }
+
+    /// Loads an object fully into memory from a file.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn load<T, P>(path: P) -> Result<T>
     where
         T: ParcodeNative,
@@ -123,6 +146,7 @@ impl Parcode {
     /// let bytes = fetch(...).await;
     /// Parcode::open(bytes)?;
     /// ```
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn open<P: AsRef<Path>>(path: P) -> Result<ParcodeFile> {
         ParcodeFile::open(path)
     }
@@ -132,7 +156,17 @@ impl Parcode {
         ParcodeFile::from_bytes(data)
     }
 
-    /// Serializes an object synchronously (single-threaded) with default settings.
+    /// PLACEHOLDER
+    pub fn write_sync<T, W>(writer: W, root_object: &T) -> Result<()>
+    where
+        T: ParcodeVisitor,
+        W: Write + Send,
+    {
+        ParcodeOptions::default().write_sync(writer, root_object)
+    }
+
+    /// PLACEHOLDER
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn save_sync<T, P>(path: P, root_object: &T) -> Result<()>
     where
         T: ParcodeVisitor,
@@ -144,6 +178,13 @@ impl Parcode {
     /// Generates a structural inspection report of a file without full initialization.
     ///
     /// This is a convenience wrapper equivalent to `ParcodeInspector::inspect`.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let report = Parcode::inspect("data.par")?;
+    /// println!("{}", report);
+    /// ```
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn inspect<P: AsRef<Path>>(path: P) -> Result<DebugReport> {
         ParcodeInspector::inspect(path)
     }
@@ -321,7 +362,7 @@ impl ParcodeOptions {
     ///
     /// Serializes an object graph to disk with the configured settings.
     ///
-    /// This is a convenience wrapper around `write_to_writer` that handles file creation.
+    /// This is a convenience wrapper around `write` that handles file creation.
     ///
     /// ## Type Parameters
     ///
@@ -334,13 +375,13 @@ impl ParcodeOptions {
     /// - `path`: The file path to write to. If the file exists, it will be truncated.
     /// - `root_object`: A reference to the object to serialize.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn write<T, P>(&self, path: P, root_object: &T) -> Result<()>
+    pub fn save<T, P>(&self, path: P, root_object: &T) -> Result<()>
     where
         T: ParcodeVisitor + Sync,
         P: AsRef<Path>,
     {
         let file = std::fs::File::create(path)?;
-        self.write_to_writer(file, root_object)
+        self.write(file, root_object)
     }
 
     /// Serializes the object graph to a generic writer (File, `Vec<u8>`, `TcpStream`, etc).
@@ -389,15 +430,15 @@ impl ParcodeOptions {
     /// let mut buffer = Vec::new();
     ///
     /// Parcode::builder()
-    ///     .write_to_writer(&mut buffer, &data)?;
+    ///     .write(&mut buffer, &data)?;
     /// # Ok::<(), parcode::ParcodeError>(())
     /// ```
-    pub fn write_to_writer<'a, T, W>(&self, writer: W, root_object: &'a T) -> Result<()>
+    pub fn write<'a, T, W>(&self, writer: W, root_object: &'a T) -> Result<()>
     where
         T: ParcodeVisitor + Sync,
         W: Write + Send,
     {
-        // 1. Build the Task Graph (Virtual)
+        // 1. Build the Task Graph
         let mut graph = TaskGraph::<'a>::new();
         // The root has no parent (None) and no slot (None).
         root_object.visit(&mut graph, None, None);
@@ -425,41 +466,42 @@ impl ParcodeOptions {
     /// - Benchmarking vs Parallel implementation.
     ///
     /// It uses less memory than `write` because it reuses a single compression buffer.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn save_sync<T, P>(&self, path: P, root_object: &T) -> Result<()>
     where
         T: ParcodeVisitor,
         P: AsRef<Path>,
     {
-        self.write_sync(path, root_object)
+        let file = std::fs::File::create(path)?;
+        self.write_sync(file, root_object)
     }
 
-    /// Internal synchronous write implementation.
-    ///
-    /// Currently only supports file paths because `execute_graph_sync` consumes the writer,
-    /// and we need to re-open the file to append the header (simplest approach for now).
-    /// A future refactor could support generic writers for sync mode if needed.
-    pub fn write_sync<'a, T, P>(&self, path: P, root_object: &'a T) -> Result<()>
+    /// PLACEHOLDER
+    pub fn write_sync<'a, T, W>(&self, writer: W, root_object: &'a T) -> Result<()>
     where
         T: ParcodeVisitor,
-        P: AsRef<Path>,
+        W: Write + Send,
     {
-        let path = path.as_ref();
         let mut graph = TaskGraph::<'a>::new();
         root_object.visit(&mut graph, None, None);
 
-        // CREATE WRITER (Not borrowing it later)
-        let writer = SeqWriter::create(path)?;
+        let seq_writer = SeqWriter::new(writer);
         let registry = crate::compression::CompressorRegistry::new();
 
-        // Pass writer by VALUE (move)
-        let root_child_ref =
-            crate::executor::execute_graph_sync(&graph, writer, &registry, self.use_compression)?;
+        #[cfg(feature = "parallel")]
+        let root_child_ref = crate::executor::execute_graph_sync(
+            &graph,
+            &seq_writer,
+            &registry,
+            self.use_compression,
+        )?;
 
-        // Simpler approach for this iteration: Open file to append header.
-        // It's a tiny write (26 bytes), overhead is negligible compared to main payload.
-        let mut file = std::fs::OpenOptions::new().append(true).open(path)?;
+        #[cfg(not(feature = "parallel"))]
+        let root_child_ref = execute_graph(&graph, &seq_writer, &registry, self.use_compression)?;
+
         let header = GlobalHeader::new(root_child_ref.offset, root_child_ref.length);
-        file.write_all(&header.to_bytes())?;
+        seq_writer.write_all(&header.to_bytes())?;
+        seq_writer.flush()?;
 
         Ok(())
     }
