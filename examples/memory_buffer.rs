@@ -1,6 +1,6 @@
 //! Example: Writing Parcode to a Memory Buffer
 //!
-//! This example demonstrates how to use the generic `write_to_writer` API
+//! This example demonstrates how to use the generic `write` API
 //! to serialize a Parcode object directly into a `Vec<u8>` in memory,
 //! bypassing the file system.
 
@@ -36,12 +36,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut buffer: Vec<u8> = Vec::new();
 
     // 3. Serialize to the buffer
-    // We use `write_to_writer` which accepts any W: Write + Send
+    // We use `write` which accepts any W: Write + Send
     // Vec<u8> implements Write and Send.
     println!("Serializing to memory buffer...");
     Parcode::builder()
         .compression(true) // Optional: enable compression
-        .write_to_writer(&mut buffer, &user)?;
+        .write(&mut buffer, &user)?;
 
     println!(
         "Serialization complete. Buffer size: {} bytes",

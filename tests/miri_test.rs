@@ -33,7 +33,7 @@ mod miri_tests {
 
         let mut buffer = Vec::new();
         Parcode::builder()
-            .write_to_writer(&mut buffer, &world)
+            .write(&mut buffer, &world)
             .expect("Write failed");
 
         let path = "miri_test.par";

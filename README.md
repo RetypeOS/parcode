@@ -203,7 +203,7 @@ let mut buffer = Vec::new();
 // Serialize directly to RAM
 Parcode::builder()
     .compression(true)
-    .write_to_writer(&mut buffer, &my_data)?;
+    .write(&mut buffer, &my_data)?;
 
 // 'buffer' now contains the full Parcode file structure
 ```
