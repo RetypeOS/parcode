@@ -9,10 +9,13 @@
 //! - **Stability:** Eliminates channel backpressure "stop-and-go" behavior.
 
 use crate::error::{ParcodeError, Result};
-use std::fs::File;
 use std::io::{BufWriter, Write};
-use std::path::Path;
 use std::sync::Mutex;
+
+#[cfg(not(target_arch = "wasm32"))]
+use std::fs::File;
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::Path;
 
 /// We use a 16MB buffer.
 /// This allows ~128 chunks of 128KB to be written purely in memory
@@ -95,10 +98,13 @@ impl<W: Write + Send> SeqWriter<W> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl SeqWriter<File> {
     /// Opens the file with an optimized buffer configuration.
     ///
     /// The file is created (truncated if it exists) and wrapped in a large `BufWriter`.
+    ///
+    /// **Note:** This method is not available on WASM targets.
     pub fn create(path: &Path) -> Result<Self> {
         let file = File::create(path)?;
         Ok(Self::new(file))

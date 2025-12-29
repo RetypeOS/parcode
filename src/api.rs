@@ -99,15 +99,37 @@ impl Parcode {
         T: ParcodeNative,
         P: AsRef<Path>,
     {
-        // One-liner: Open -> Load
         ParcodeFile::open(path)?.load()
     }
 
-    /// Opens a Parcode file for advanced usage (Lazy loading, Inspection).
+    /// PLACEHOLDER
+    pub fn load_bytes<T: ParcodeNative>(data: Vec<u8>) -> Result<T> {
+        ParcodeFile::from_bytes(data)?.load()
+    }
+
+    /// Opens a Parcode resource using the configured storage backend.
     ///
-    /// Returns a [`ParcodeFile`] handle.
+    /// # Arguments
+    /// * `input`: Can be:
+    ///   - `Vec<u8>`: Direct memory (WASM compatible).
+    ///   - `Path / String`: File system path (Requires `mmap` or fallback read).
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// // Desktop (Mmap)
+    /// Parcode::open("data.par")?;
+    ///
+    /// // WASM (Memory)
+    /// let bytes = fetch(...).await;
+    /// Parcode::open(bytes)?;
+    /// ```
     pub fn open<P: AsRef<Path>>(path: P) -> Result<ParcodeFile> {
         ParcodeFile::open(path)
+    }
+
+    /// PLACEHOLDER
+    pub fn open_bytes(data: Vec<u8>) -> Result<ParcodeFile> {
+        ParcodeFile::from_bytes(data)
     }
 
     /// Serializes an object synchronously (single-threaded) with default settings.
@@ -124,6 +146,12 @@ impl Parcode {
     /// This is a convenience wrapper equivalent to `ParcodeInspector::inspect`.
     pub fn inspect<P: AsRef<Path>>(path: P) -> Result<DebugReport> {
         ParcodeInspector::inspect(path)
+    }
+
+    /// PLACEHOLDER
+    pub fn inspect_bytes(data: Vec<u8>) -> Result<DebugReport> {
+        let file = ParcodeFile::from_bytes(data)?;
+        ParcodeInspector::inspect_file(&file)
     }
 }
 
@@ -305,6 +333,7 @@ impl ParcodeOptions {
     ///
     /// - `path`: The file path to write to. If the file exists, it will be truncated.
     /// - `root_object`: A reference to the object to serialize.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn write<T, P>(&self, path: P, root_object: &T) -> Result<()>
     where
         T: ParcodeVisitor + Sync,

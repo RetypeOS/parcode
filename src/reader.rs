@@ -201,27 +201,56 @@
 //!    initialization overhead. All unsafe operations are carefully encapsulated and
 //!    documented with safety invariants.
 
-use memmap2::Mmap;
-use rayon::prelude::*;
 use serde::{Deserialize, de::DeserializeOwned};
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::fs::File;
 use std::hash::Hash;
 use std::io::Cursor;
 use std::marker::PhantomData;
 use std::mem::{ManuallyDrop, MaybeUninit};
-use std::path::Path;
+use std::ops::Deref;
 use std::ptr;
 use std::slice;
 use std::sync::Arc;
+
+#[cfg(all(feature = "mmap", not(target_arch = "wasm32")))]
+use memmap2::Mmap;
+#[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+use rayon::prelude::*;
+#[cfg(not(target_arch = "wasm32"))]
+use std::fs::File;
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::Path;
 
 use crate::compression::CompressorRegistry;
 use crate::error::{ParcodeError, Result};
 use crate::format::{ChildRef, GLOBAL_HEADER_SIZE, GlobalHeader, MAGIC_BYTES, MetaByte};
 use crate::rt::ParcodeLazyRef;
 
-// --- TRAIT SYSTEM FOR AUTOMATIC STRATEGY SELECTION ---
+// ---
+
+/// PLACEHOLDER
+#[derive(Debug, Clone)]
+pub enum DataSource {
+    #[cfg(all(feature = "mmap", not(target_arch = "wasm32")))]
+    /// PLACEHOLDER
+    Mmap(Arc<Mmap>),
+    /// PLACEHOLDER
+    Memory(Arc<Vec<u8>>),
+}
+
+impl Deref for DataSource {
+    type Target = [u8];
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        match self {
+            #[cfg(all(feature = "mmap", not(target_arch = "wasm32")))]
+            DataSource::Mmap(mmap) => mmap.as_ref(),
+            DataSource::Memory(vec) => vec.as_slice(),
+        }
+    }
+}
 
 /// A trait for types that know how to reconstruct themselves from a [`ChunkNode`].
 ///
@@ -556,8 +585,8 @@ where
 /// - Structural inspection (`inspect`).
 #[derive(Debug)]
 pub struct ParcodeFile {
-    /// Memory-mapped file content.
-    mmap: Arc<Mmap>,
+    /// Memory file content.
+    source: DataSource,
     /// Parsed global footer/header information.
     header: GlobalHeader,
     /// Total size of the file in bytes.
@@ -567,39 +596,64 @@ pub struct ParcodeFile {
 }
 
 impl ParcodeFile {
-    /// Opens a Parcode file, maps it into memory, and validates integrity.
+    /// Opens a Parcode file from disk.
+    ///
+    /// # Platform Behavior
+    /// * **Desktop/Server:**
+    ///   - If `feature = "mmap"` is enabled (default), uses memory mapping for Zero-Copy.
+    ///   - If `feature = "mmap"` is disabled, reads the entire file into RAM.
+    /// * **WASM:** This method is not available. Use `from_bytes` instead.
     ///
     /// # Errors
-    /// Returns error if the file does not exist, is smaller than the header,
-    /// or contains invalid magic bytes/version.
+    /// Returns error if file doesn't exist, lacks permissions, or is invalid.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let file = File::open(path)?;
-        let file_size = file.metadata()?.len();
+        let path = path.as_ref();
 
-        if file_size < GLOBAL_HEADER_SIZE as u64 {
-            return Err(ParcodeError::Format(
-                "File is smaller than the global header".into(),
-            ));
+        // Memory mapping
+        #[cfg(feature = "mmap")]
+        {
+            let file = File::open(path)?;
+            #[allow(unsafe_code)]
+            let mmap = unsafe { Mmap::map(&file)? };
+
+            Self::init(DataSource::Mmap(Arc::new(mmap)), file.metadata()?.len())
         }
 
-        // Mmap is fundamentally unsafe in the presence of external modification
-        // (e.g., another process truncating the file). We assume the file is treated
-        // as immutable by the OS while we read it.
-        #[allow(unsafe_code)]
-        let mmap = unsafe { Mmap::map(&file)? };
+        // Read from RAM
+        #[cfg(not(feature = "mmap"))]
+        {
+            use std::io::Read;
 
-        // Read Global Header (Located at the very end of the file)
-        let header_start = usize::try_from(file_size)
-            .map_err(|_| ParcodeError::Format("File too large for address space".into()))?
-            - GLOBAL_HEADER_SIZE;
-        let header_bytes = mmap
-            .get(header_start..)
-            .ok_or_else(|| ParcodeError::Format("Header start out of bounds".into()))?;
+            let mut file = File::open(path)?;
+            let file_size = file.metadata()?.len();
+            let mut buffer = Vec::with_capacity(file_size as usize);
 
-        if header_bytes.get(0..4) != Some(&MAGIC_BYTES) {
-            return Err(ParcodeError::Format(
-                "Invalid Magic Bytes. Not a Parcode file.".into(),
-            ));
+            file.read_to_end(&mut buffer)?;
+
+            Self::init(DataSource::Memory(Arc::new(buffer)), file_size)
+        }
+    }
+
+    /// Opens a Parcode file from an in-memory buffer.
+    ///
+    /// This is the primary entry point for tests and architectures without direct file access.
+    /// The `ParcodeFile` takes ownership of the data (wrapped in Arc).
+    pub fn from_bytes(data: Vec<u8>) -> Result<Self> {
+        let size = data.len() as u64;
+        Self::init(DataSource::Memory(Arc::new(data)), size)
+    }
+
+    fn init(source: DataSource, file_size: u64) -> Result<Self> {
+        if file_size < GLOBAL_HEADER_SIZE as u64 {
+            return Err(ParcodeError::Format("File smaller than header".into()));
+        }
+
+        let header_start = (file_size - GLOBAL_HEADER_SIZE as u64) as usize;
+        let header_bytes = &source[header_start..];
+
+        if header_bytes[0..4] != MAGIC_BYTES {
+            return Err(ParcodeError::Format("Invalid Magic Bytes".into()));
         }
 
         let version = u16::from_le_bytes(
@@ -620,14 +674,14 @@ impl ParcodeFile {
                 .get(6..14)
                 .ok_or_else(|| ParcodeError::Format("Root offset out of bounds".into()))?
                 .try_into()
-                .map_err(|_| ParcodeError::Format("Failed to read root_offset".into()))?,
+                .map_err(|_| ParcodeError::Format("Failed to read root offset".into()))?,
         );
         let root_length = u64::from_le_bytes(
             header_bytes
                 .get(14..22)
                 .ok_or_else(|| ParcodeError::Format("Root length out of bounds".into()))?
                 .try_into()
-                .map_err(|_| ParcodeError::Format("Failed to read root_length".into()))?,
+                .map_err(|_| ParcodeError::Format("Failed to read root length".into()))?,
         );
         let checksum = u32::from_le_bytes(
             header_bytes
@@ -637,17 +691,18 @@ impl ParcodeFile {
                 .map_err(|_| ParcodeError::Format("Failed to read checksum".into()))?,
         );
 
+        let header = GlobalHeader {
+            magic: MAGIC_BYTES,
+            version,
+            root_offset,
+            root_length,
+            checksum,
+        };
+
         Ok(Self {
-            mmap: Arc::new(mmap),
-            header: GlobalHeader {
-                magic: MAGIC_BYTES,
-                version,
-                root_offset,
-                root_length,
-                checksum,
-            },
+            source,
+            header,
             file_size,
-            // Initialize registry with default algorithms (NoCompression, Lz4 if enabled)
             registry: CompressorRegistry::new(),
         })
     }
@@ -729,29 +784,19 @@ impl ParcodeFile {
         let chunk_end = usize::try_from(offset + length)
             .map_err(|_| ParcodeError::Format("Chunk end exceeds address space".into()))?;
 
-        // Read the MetaByte (Last byte of the chunk)
-        let meta = MetaByte::from_byte(
-            *self
-                .mmap
-                .get(chunk_end - 1)
-                .ok_or_else(|| ParcodeError::Format("MetaByte out of bounds".into()))?,
-        );
+        let meta = MetaByte::from_byte(self.source[chunk_end - 1]);
 
         let mut child_count = 0;
-        let mut payload_end = chunk_end - 1; // Default: payload ends just before MetaByte
+        let mut payload_end = chunk_end - 1;
 
         if meta.is_chunkable() {
-            // Layout: [Payload] ... [ChildRefs] [ChildCount (4 bytes)] [MetaByte (1 byte)]
             if length < 5 {
                 return Err(ParcodeError::Format("Chunk too small for metadata".into()));
             }
 
             let count_start = chunk_end - 5;
-            let child_count_bytes = self
-                .mmap
-                .get(count_start..count_start + 4)
-                .ok_or_else(|| ParcodeError::Format("Child count out of bounds".into()))?;
-            child_count = Self::read_u32(child_count_bytes)?;
+            let count_bytes = &self.source[count_start..count_start + 4];
+            child_count = Self::read_u32(count_bytes)?;
 
             let footer_size = child_count as usize * ChildRef::SIZE;
             let total_meta_size = 1 + 4 + footer_size;
@@ -813,21 +858,10 @@ impl<'a> ChunkNode<'a> {
         let end = usize::try_from(self.payload_end_offset)
             .map_err(|_| ParcodeError::Format("End offset exceeds address space".into()))?;
 
-        if end > self.reader.mmap.len() {
-            return Err(ParcodeError::Format(
-                "Payload offset out of mmap bounds".into(),
-            ));
-        }
-
-        let raw = self
-            .reader
-            .mmap
-            .get(start..end)
-            .ok_or_else(|| ParcodeError::Format("Payload out of bounds".into()))?;
+        // Access via self.reader.source (Deref to &[u8])
+        let raw = &self.reader.source[start..end];
         let method_id = self.meta.compression_method();
 
-        // Delegate decompression to the registry.
-        // This supports pluggable algorithms (e.g., Lz4).
         self.reader.registry.get(method_id)?.decompress(raw)
     }
 
@@ -876,7 +910,6 @@ impl<'a> ChunkNode<'a> {
             let mut cursor = std::io::Cursor::new(payload.as_ref());
             let children = self.children()?;
             let mut child_iter = children.into_iter();
-            // Use read_slice helper
             return T::read_slice_from_shard(&mut cursor, &mut child_iter);
         }
 
@@ -937,63 +970,73 @@ impl<'a> ChunkNode<'a> {
         // it is sound.
         let buffer_base_addr = result_buffer.as_mut_ptr() as usize;
 
-        let exec_result = shard_jobs.into_par_iter().try_for_each(
-            move |(shard_idx, start_idx, expected_count)| -> Result<()> {
-                // 1. Load Chunk
-                let shard_node = self.get_child_by_index(shard_idx)?;
-                let payload = shard_node.read_raw()?;
-                let mut cursor = Cursor::new(payload.as_ref());
-                let children = shard_node.children()?;
-                let mut child_iter = children.into_iter();
-
-                // 2. Construct Mutable Slice Window
-                // We recreate the slice reference inside the thread.
-                // start_idx .. start_idx + expected_count
-                let dest_slice = unsafe {
-                    let ptr = (buffer_base_addr as *mut MaybeUninit<T>).add(start_idx);
-                    slice::from_raw_parts_mut(ptr, expected_count)
-                };
-
-                // 3. Decode Direct-to-Memory
-                let items_read = T::read_into_slice(&mut cursor, &mut child_iter, dest_slice)?;
-
-                if items_read != expected_count {
-                    return Err(ParcodeError::Format(format!(
-                        "Shard {} items mismatch: expected {}, got {}",
-                        shard_idx, expected_count, items_read
-                    )));
-                }
-
-                Ok(())
-            },
-        );
-
-        // 6. Handle Result
-        match exec_result {
-            Ok(_) => {
-                let final_vec = unsafe {
-                    let mut manual = ManuallyDrop::new(result_buffer);
-                    Vec::from_raw_parts(
-                        manual.as_mut_ptr() as *mut T,
-                        manual.len(),
-                        manual.capacity(),
+        #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+        {
+            // Parallel Execution
+            shard_jobs.into_par_iter().try_for_each(
+                |(shard_idx, start_idx, expected_count)| -> Result<()> {
+                    self.decode_shard_into_buffer::<T>(
+                        shard_idx,
+                        start_idx,
+                        expected_count,
+                        buffer_base_addr,
                     )
-                };
-                Ok(final_vec)
-            }
-            Err(e) => {
-                // TODO: \
-                // MEMORY LEAK WARNING:
-                // If we error here, `result_buffer` (Vec<MaybeUninit>) is dropped.
-                // `MaybeUninit` does NOT drop its payload.
-                // So any items T that were successfully initialized in other threads will NOT be dropped.
-                // This is safe (no UB), but it is a memory leak of T's resources.
-                // Fixing this requires tracking exactly which ranges were initialized, which is complex
-                // in a parallel context. Given that this is an error path (file corruption),
-                // leaking resources is acceptable vs UB.
-                Err(e)
+                },
+            )?;
+        }
+
+        #[cfg(not(feature = "parallel"))]
+        {
+            // Serial Execution
+            for (shard_idx, start_idx, expected_count) in shard_jobs {
+                self.decode_shard_into_buffer::<T>(
+                    shard_idx,
+                    start_idx,
+                    expected_count,
+                    buffer_base_addr,
+                )?;
             }
         }
+
+        unsafe {
+            let mut manual = ManuallyDrop::new(result_buffer);
+            Ok(Vec::from_raw_parts(
+                manual.as_mut_ptr() as *mut T,
+                manual.len(),
+                manual.capacity(),
+            ))
+        }
+    }
+
+    fn decode_shard_into_buffer<T: ParcodeItem>(
+        &self,
+        shard_idx: usize,
+        start_idx: usize,
+        expected_count: usize,
+        buffer_base_addr: usize,
+    ) -> Result<()> {
+        let shard_node = self.get_child_by_index(shard_idx)?;
+        let payload = shard_node.read_raw()?;
+        let mut cursor = Cursor::new(payload.as_ref());
+        let children = shard_node.children()?;
+        let mut child_iter = children.into_iter();
+
+        #[allow(unsafe_code)]
+        let dest_slice = unsafe {
+            let ptr = (buffer_base_addr as *mut MaybeUninit<T>).add(start_idx);
+            slice::from_raw_parts_mut(ptr, expected_count)
+        };
+
+        // Uses Destination Passing Style to avoid intermediate allocs
+        let items_read = T::read_into_slice(&mut cursor, &mut child_iter, dest_slice)?;
+
+        if items_read != expected_count {
+            return Err(ParcodeError::Format(format!(
+                "Shard {} items mismatch: expected {}, got {}",
+                shard_idx, expected_count, items_read
+            )));
+        }
+        Ok(())
     }
 
     // --- COLLECTION UTILITIES ---
@@ -1115,11 +1158,8 @@ impl<'a> ChunkNode<'a> {
         let footer_start = usize::try_from(self.payload_end_offset)
             .map_err(|_| ParcodeError::Format("Offset exceeds usize range".into()))?;
         let entry_start = footer_start + (index * ChildRef::SIZE);
-        let bytes = self
-            .reader
-            .mmap
-            .get(entry_start..entry_start + ChildRef::SIZE)
-            .ok_or_else(|| ParcodeError::Format("ChildRef index out of bounds".into()))?;
+
+        let bytes = &self.reader.source[entry_start..entry_start + ChildRef::SIZE];
 
         let r = ChildRef::from_bytes(bytes)?;
         self.reader.get_chunk(r.offset, r.length)

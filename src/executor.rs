@@ -58,6 +58,20 @@ pub fn execute_graph<'a, W: Write + Send>(
     registry: &CompressorRegistry,
     use_compression: bool,
 ) -> Result<ChildRef> {
+    #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+    return execute_graph_parallel(graph, writer, registry, use_compression);
+
+    #[cfg(not(feature = "parallel"))]
+    return execute_graph_serial_fallback(graph, writer, registry, use_compression);
+}
+// ------------
+#[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+fn execute_graph_parallel<'a, W: Write + Send>(
+    graph: &TaskGraph<'a>,
+    writer: &SeqWriter<W>,
+    registry: &CompressorRegistry,
+    use_compression: bool,
+) -> Result<ChildRef> {
     // 1. Setup the shared context.
     let ctx = ExecutionContext {
         graph,
@@ -110,6 +124,88 @@ pub fn execute_graph<'a, W: Write + Send>(
     (*root_guard).ok_or_else(|| ParcodeError::Internal("Graph execution incomplete".into()))
 }
 
+#[cfg(not(feature = "parallel"))]
+fn execute_graph_serial_fallback<'a, W: Write + Send>(
+    graph: &TaskGraph<'a>,
+    writer: &SeqWriter<W>,
+    registry: &CompressorRegistry,
+    use_compression: bool,
+) -> Result<ChildRef> {
+    let mut shared_buffer = Vec::with_capacity(128 * 1024);
+    let mut root_result: Option<ChildRef> = None;
+
+    // TODO: maybe i will refactor this
+    for node in graph.nodes().iter().rev() {
+        // 1. Collect children results
+        let completed_children_raw = {
+            let mut guard = node.completed_children.lock().expect("Mutex poisoned");
+            std::mem::take(&mut *guard)
+        };
+
+        let children_refs: Vec<ChildRef> = completed_children_raw
+            .into_iter()
+            .map(|opt| {
+                opt.ok_or_else(|| crate::ParcodeError::Internal("Missing child result".into()))
+            })
+            .collect::<Result<_>>()?;
+
+        let is_chunkable = !children_refs.is_empty();
+
+        // 2. Execute Job
+        let raw_payload = node.job.execute(&children_refs)?;
+
+        // 3. Compress
+        shared_buffer.clear();
+        let config = node.job.config();
+        let compression_id = if use_compression && config.compression_id == 0 {
+            1
+        } else {
+            config.compression_id
+        };
+        let compressor = registry.get(compression_id)?;
+
+        let footer_size = if is_chunkable {
+            (children_refs.len() * ChildRef::SIZE) + 4
+        } else {
+            0
+        };
+        shared_buffer.reserve(raw_payload.len() + footer_size + 1);
+        compressor.compress_append(&raw_payload, &mut shared_buffer)?;
+
+        // 4. Footer & Meta
+        if is_chunkable {
+            for child in &children_refs {
+                shared_buffer.extend_from_slice(&child.to_bytes());
+            }
+            let count = u32::try_from(children_refs.len()).unwrap_or(u32::MAX);
+            shared_buffer.extend_from_slice(&count.to_le_bytes());
+        }
+        let meta = crate::format::MetaByte::new(is_chunkable, compressor.id());
+        shared_buffer.push(meta.as_u8());
+
+        // 5. Write to SeqWriter
+        let offset = writer.write_all(&shared_buffer)?;
+
+        let my_ref = ChildRef {
+            offset,
+            length: shared_buffer.len() as u64,
+        };
+
+        // 6. Propagate to parent
+        if let Some(parent_id) = node.parent {
+            let parent_node = graph.get_node(parent_id);
+            let slot = node.parent_slot.expect("Parent slot missing");
+            parent_node.register_child_result(slot, my_ref)?;
+        } else {
+            root_result = Some(my_ref);
+        }
+    }
+
+    writer.flush()?;
+
+    root_result.ok_or_else(|| crate::ParcodeError::Internal("Graph execution incomplete".into()))
+}
+
 /// Executes the graph synchronously with aggressive optimizations.
 ///
 /// # Optimizations
@@ -133,21 +229,8 @@ pub fn execute_graph_sync<'a, W: Write + Send>(
 ) -> Result<ChildRef> {
     // 1. Bypass the Mutex lock. We own the writer now.
     let mut raw_writer = writer.into_inner()?;
-    // NOTE: We assume we are writing from offset 0 relative to this execution if stream_position fails or isn't used.
-    // Since we are generic W, we can't rely on Seek.
-    // We will track offset manually starting from 0.
-    // If the user appended to a file, they should be aware that the returned offsets are relative to where we started writing,
-    // UNLESS we require Seek. But requiring Seek limits us (no TcpStream).
-    // For Parcode file format, absolute offsets are needed for the header.
-    // If writing to a stream, the header must be written at the end pointing to absolute offsets?
-    // Actually, Parcode format expects random access for reading, so writing to a non-seekable stream is mostly for
-    // "streaming out" a file that will be saved to disk later or read linearly?
-    // But the format relies on offsets.
-    // If W is a File, we can get the current offset.
-    // If W is Vec<u8>, we can get len.
-    // If W is TcpStream, we can't.
-    // However, for the purpose of generating the file, we just need to know the offset relative to the start of the file.
-    // Let's assume start offset is 0 for now for simplicity in generic context, or we could add a `base_offset` param.
+    // TODO: we revise this logic in another time.
+    // At the moment, i assume start offset is 0 for now for simplicity in generic context, or we could add a `base_offset` param.
     let mut current_offset = 0u64;
 
     // 2. Reusable buffer. Start with 128KB to minimize initial reallocs.
