@@ -1,7 +1,7 @@
 #![allow(missing_docs)]
 
 fn main() -> parcode::Result<()> {
-    use parcode::{Parcode, ParcodeObject, inspector::ParcodeInspector};
+    use parcode::{Parcode, ParcodeObject};
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
 
@@ -33,7 +33,7 @@ fn main() -> parcode::Result<()> {
 
     Parcode::save("stress_jagged.par", &jagged_obj)?;
 
-    let report = ParcodeInspector::inspect("stress_jagged.par")?;
+    let report = Parcode::inspect("stress_jagged.par")?;
     println!("{}", report);
 
     // Verify Data
@@ -98,7 +98,7 @@ fn main() -> parcode::Result<()> {
 
     Parcode::save("stress_nested.par", &root)?;
 
-    let report_nested = ParcodeInspector::inspect("stress_nested.par")?;
+    let report_nested = Parcode::inspect("stress_nested.par")?;
     println!("{}", report_nested);
 
     // Verify Data

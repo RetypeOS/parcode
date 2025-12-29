@@ -65,6 +65,7 @@ use crate::error::Result;
 use crate::executor::execute_graph;
 use crate::format::GlobalHeader;
 use crate::graph::TaskGraph;
+use crate::inspector::{DebugReport, ParcodeInspector};
 use crate::io::SeqWriter;
 use crate::reader::{ParcodeFile, ParcodeNative};
 use crate::visitor::ParcodeVisitor;
@@ -116,6 +117,13 @@ impl Parcode {
         P: AsRef<Path>,
     {
         ParcodeOptions::default().save_sync(path, root_object)
+    }
+
+    /// Generates a structural inspection report of a file without full initialization.
+    ///
+    /// This is a convenience wrapper equivalent to `ParcodeInspector::inspect`.
+    pub fn inspect<P: AsRef<Path>>(path: P) -> Result<DebugReport> {
+        ParcodeInspector::inspect(path)
     }
 }
 

@@ -1,10 +1,16 @@
 name = "parcode"
-version = "2.0.1"
+version = "0.5.3"
 description = "Blazing fast parallel caching for Rust. Serializes complex data to a chunked file format to get CPU maximum power on data loads, but as a simple binary loader."
 
 [scripts.test]
-desc = "Run a simple test echo command."
-run = """echo "✅ Test for '<name>' successful!""""
+run = [
+    "# === Running all standard quality tests... ===",
+    "@> cargo fmt -- --check",
+    "@> cargo clippy --all-features --all-targets -- -D warnings",
+    "@> cargo test --all-features --all-targets",
+    "# <#green>=== Completed! now you can make a PR. ===<#reset>",
+]
+desc = "Run a standard quality test required from make a PR."
 
 [options.at_start]
 desc = "Commands to run when entering a session (e.g., `source .venv/bin/activate`)"
