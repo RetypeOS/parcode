@@ -1,14 +1,27 @@
 name = "parcode"
-version = "0.5.3"
+version = "0.6.0"
 description = "Blazing fast parallel caching for Rust. Serializes complex data to a chunked file format to get CPU maximum power on data loads, but as a simple binary loader."
+
+[vars]
+_cargo_all = "<vars::_cargo_features> <vars::_cargo_targets> <vars::_cargo_all_feat_targets>"
+_cargo_features = "<params::features(alias='-f', default=' ', literal)>"
+_cargo_targets = "<params::targets(alias='-t', default=' ', literal)>"
+_cargo_all_feat_targets = "<params::all(map='--all-features --all-targets', default=' ')>"
+GREETING = "Hello from an axes variable!"
+
+[scripts]
+fmt = "cargo fmt -- --check"
+clippy = "cargo clippy <vars::_cargo_all> <params> -- -D warnings"
+test = "cargo test <vars::_cargo_all> <params>"
+build = "cargo build <vars::_cargo_all>"
 
 [scripts.check]
 run = [
     "# === Running all standard quality tests... ===",
-    "cargo build <vars::_cargo_all>",
-    "> cargo fmt -- --check",
-    "> cargo clippy <vars::_cargo_all> -- -D warnings",
-    "> cargo test <vars::_cargo_all>",
+    "<scripts::build>",
+    "> <scripts::fmt>",
+    "> <scripts::clippy>",
+    "> <scripts::test>",
     "# <#green>=== Completed! now you can make a PR. ===<#reset>",
 ]
 desc = "Run a standard quality test required from make a PR."
@@ -22,12 +35,3 @@ desc = "Commands to run when exiting a session (e.g., `docker-compose down`)"
 run = "# echo 'Exiting session...'"
 
 [options.open_with]
-
-[vars]
-_cargo_all = "<vars::_cargo_features> <vars::_cargo_targets> <vars::_cargo_all_feat_targets>"
-_cargo_features = "<params::features(alias='-f', default=' ')>"
-_cargo_targets = "<params::targets(alias='-t', default=' ')>"
-_cargo_all_feat_targets = "<params::all(map='--all-features --all-targets', default=' ')>"
-GREETING = "Hello from an axes variable!"
-
-[env]
