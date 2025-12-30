@@ -15,13 +15,19 @@ use std::vec::IntoIter;
 
 /// Wrapper that injects configuration into an existing Job.
 #[derive(Debug)]
-pub struct ConfiguredJob<'a, J: ?Sized> {
+pub struct ConfiguredJob<'a, J>
+where
+    J: ?Sized,
+{
     config: JobConfig,
     inner: Box<J>,
     _marker: PhantomData<&'a ()>,
 }
 
-impl<'a, J: SerializationJob<'a> + ?Sized> ConfiguredJob<'a, J> {
+impl<'a, J> ConfiguredJob<'a, J>
+where
+    J: SerializationJob<'a> + ?Sized,
+{
     pub fn new(inner: Box<J>, config: JobConfig) -> Self {
         Self {
             inner,
@@ -31,7 +37,10 @@ impl<'a, J: SerializationJob<'a> + ?Sized> ConfiguredJob<'a, J> {
     }
 }
 
-impl<'a, J: SerializationJob<'a> + ?Sized> SerializationJob<'a> for ConfiguredJob<'a, J> {
+impl<'a, J> SerializationJob<'a> for ConfiguredJob<'a, J>
+where
+    J: SerializationJob<'a> + ?Sized,
+{
     fn execute(&self, children_refs: &[ChildRef]) -> Result<Vec<u8>> {
         self.inner.execute(children_refs)
     }
@@ -75,7 +84,10 @@ pub struct ParcodePromise<'a, T> {
     _m: PhantomData<T>,
 }
 
-impl<'a, T: DeserializeOwned> ParcodePromise<'a, T> {
+impl<'a, T> ParcodePromise<'a, T>
+where
+    T: DeserializeOwned,
+{
     /// Internal constructor.
     pub fn new(node: ChunkNode<'a>) -> Self {
         Self {
@@ -100,7 +112,10 @@ pub struct ParcodeCollectionPromise<'a, T> {
     _m: PhantomData<T>,
 }
 
-impl<'a, T: ParcodeItem + Send + Sync + 'a> ParcodeCollectionPromise<'a, T> {
+impl<'a, T> ParcodeCollectionPromise<'a, T>
+where
+    T: ParcodeItem + Send + Sync + 'a,
+{
     /// Internal constructor.
     pub fn new(node: ChunkNode<'a>) -> Self {
         Self {
@@ -589,7 +604,10 @@ where
 /// This iterator efficiently traverses the shards of a vector, maintaining
 /// a cursor position to avoid re-parsing previous items.
 #[derive(Debug)]
-pub struct ParcodeLazyIterator<'a, T: ParcodeLazyRef<'a>> {
+pub struct ParcodeLazyIterator<'a, T>
+where
+    T: ParcodeLazyRef<'a>,
+{
     /// The shards (children of the container node).
     shards: std::vec::IntoIter<ChunkNode<'a>>,
 
@@ -608,7 +626,10 @@ pub struct ParcodeLazyIterator<'a, T: ParcodeLazyRef<'a>> {
     _marker: PhantomData<T>,
 }
 
-impl<'a, T: ParcodeLazyRef<'a>> ParcodeLazyIterator<'a, T> {
+impl<'a, T> ParcodeLazyIterator<'a, T>
+where
+    T: ParcodeLazyRef<'a>,
+{
     pub fn new(node: ChunkNode<'a>) -> Result<Self> {
         let total_items = usize::try_from(node.len()).unwrap_or(usize::MAX);
         let shards = node.children()?.into_iter();
@@ -658,7 +679,10 @@ impl<'a, T: ParcodeLazyRef<'a>> ParcodeLazyIterator<'a, T> {
     }
 }
 
-impl<'a, T: ParcodeLazyRef<'a>> Iterator for ParcodeLazyIterator<'a, T> {
+impl<'a, T> Iterator for ParcodeLazyIterator<'a, T>
+where
+    T: ParcodeLazyRef<'a>,
+{
     type Item = Result<T::Lazy>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -695,7 +719,10 @@ impl<'a, T: ParcodeLazyRef<'a>> Iterator for ParcodeLazyIterator<'a, T> {
     }
 }
 
-impl<'a, T: ParcodeLazyRef<'a>> ExactSizeIterator for ParcodeLazyIterator<'a, T> {
+impl<'a, T> ExactSizeIterator for ParcodeLazyIterator<'a, T>
+where
+    T: ParcodeLazyRef<'a>,
+{
     fn len(&self) -> usize {
         self.total_items - self.items_yielded
     }

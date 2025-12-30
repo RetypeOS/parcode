@@ -63,8 +63,9 @@
 //!     Ok(())
 //! }
 //! # let state = GameState { level: 1 };
-//! # save_game_state(&state).unwrap();
+//! # save_game_state(&state)?;
 //! # std::fs::remove_file("game_err.par").ok();
+//! # Ok::<(), parcode::ParcodeError>(())
 //! ```
 //!
 //! ### Accessing Error Sources

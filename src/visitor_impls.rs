@@ -310,7 +310,6 @@ impl<'a> SerializationJob<'a> for MapContainerJob {
 impl<K, V> ParcodeVisitor for HashMap<K, V>
 where
     K: Serialize + DeserializeOwned + Hash + Eq + Send + Sync + Clone + 'static,
-    K: Serialize + DeserializeOwned + Hash + Eq + Send + Sync + Clone + 'static,
     V: Serialize + DeserializeOwned + Send + Sync + Clone + ParcodeVisitor + 'static,
 {
     fn visit<'a>(
@@ -439,7 +438,10 @@ where
     }
 }
 
-impl<T: ParcodeVisitor> ParcodeVisitor for &T {
+impl<T> ParcodeVisitor for &T
+where
+    T: ParcodeVisitor,
+{
     fn visit<'a>(
         &'a self,
         graph: &mut TaskGraph<'a>,

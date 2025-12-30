@@ -177,18 +177,25 @@ impl ChildRef {
         if bytes.len() < Self::SIZE {
             return Err(ParcodeError::Format("Buffer too small for ChildRef".into()));
         }
+
+        let offset_bytes = bytes.get(0..8).ok_or_else(|| {
+            ParcodeError::Format("Failed to read offset from ChildRef buffer".into())
+        })?;
+        let length_bytes = bytes.get(8..16).ok_or_else(|| {
+            ParcodeError::Format("Failed to read length from ChildRef buffer".into())
+        })?;
+
         let offset = u64::from_le_bytes(
-            bytes
-                .get(0..8)
-                .and_then(|s| s.try_into().ok())
-                .unwrap_or([0; 8]),
+            offset_bytes
+                .try_into()
+                .map_err(|_| ParcodeError::Format("Invalid offset bytes".into()))?,
         );
         let length = u64::from_le_bytes(
-            bytes
-                .get(8..16)
-                .and_then(|s| s.try_into().ok())
-                .unwrap_or([0; 8]),
+            length_bytes
+                .try_into()
+                .map_err(|_| ParcodeError::Format("Invalid length bytes".into()))?,
         );
+
         Ok(Self { offset, length })
     }
 }

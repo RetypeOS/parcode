@@ -123,11 +123,12 @@
 //!         stats: vec![10, 20, 30],
 //!     },
 //! };
-//! Parcode::save("game_lib.par", &state).unwrap();
+//! Parcode::save("game_lib.par", &state)?;
 //!
 //! // Load (eager)
-//! let loaded: GameState = Parcode::load("game_lib.par").unwrap();
+//! let loaded: GameState = Parcode::load("game_lib.par")?;
 //! # std::fs::remove_file("game_lib.par").ok();
+//! # Ok::<(), parcode::ParcodeError>(())
 //! ```
 //!
 //! ### Lazy Loading
@@ -159,10 +160,10 @@
 //!         stats: vec![10, 20, 30],
 //!     },
 //! };
-//! Parcode::save("game_lazy.par", &state).unwrap();
+//! Parcode::save("game_lazy.par", &state)?;
 //!
-//! let file = Parcode::open("game_lazy.par").unwrap();
-//! let state_lazy = file.root::<GameState>().unwrap();
+//! let file = Parcode::open("game_lazy.par")?;
+//! let state_lazy = file.root::<GameState>()?;
 //!
 //! // Access local fields instantly (already in memory)
 //! println!("Level: {}", state_lazy.level);
@@ -170,6 +171,7 @@
 //! // Load remote fields on-demand
 //! let player_name = state_lazy.player_data.name;
 //! # std::fs::remove_file("game_lazy.par").ok();
+//! # Ok::<(), parcode::ParcodeError>(())
 //! ```
 //!
 //! ### `HashMap` Sharding
@@ -192,12 +194,13 @@
 //! let mut users = HashMap::new();
 //! users.insert(12345, User { name: "Alice".to_string() });
 //! let db = Database { users };
-//! Parcode::save("db_map.par", &db).unwrap();
+//! Parcode::save("db_map.par", &db)?;
 //!
-//! let file = Parcode::open("db_map.par").unwrap();
-//! let db_lazy = file.root::<Database>().unwrap();
+//! let file = Parcode::open("db_map.par")?;
+//! let db_lazy = file.root::<Database>()?;
 //! let user = db_lazy.users.get(&12345u64).expect("User not found");
 //! # std::fs::remove_file("db_map.par").ok();
+//! # Ok::<(), parcode::ParcodeError>(())
 //! ```
 //!
 //! ## Performance Considerations

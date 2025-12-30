@@ -88,9 +88,10 @@
 //!
 //! // Load entire object into memory
 //! let data = vec![1, 2, 3];
-//! Parcode::save("numbers_reader.par", &data).unwrap();
-//! let data: Vec<i32> = Parcode::load("numbers_reader.par").unwrap();
+//! Parcode::save("numbers_reader.par", &data)?;
+//! let data: Vec<i32> = Parcode::load("numbers_reader.par")?;
 //! # std::fs::remove_file("numbers_reader.par").ok();
+//! # Ok::<(), parcode::ParcodeError>(())
 //! ```
 //!
 //! ### Lazy Loading (On-Demand)
@@ -113,17 +114,18 @@
 //!
 //! // Setup
 //! let state = GameState { level: 1, assets: Assets { data: vec![0; 10] } };
-//! Parcode::save("game_reader.par", &state).unwrap();
+//! Parcode::save("game_reader.par", &state)?;
 //!
-//! let file = Parcode::open("game_reader.par").unwrap();
-//! let game_lazy = file.root::<GameState>().unwrap();
+//! let file = Parcode::open("game_reader.par")?;
+//! let game_lazy = file.root::<GameState>()?;
 //!
 //! // Access local fields (instant, already in memory)
 //! println!("Level: {}", game_lazy.level);
 //!
 //! // Load remote fields on demand
-//! let assets_data = game_lazy.assets.data.load().unwrap();
+//! let assets_data = game_lazy.assets.data.load()?;
 //! # std::fs::remove_file("game_reader.par").ok();
+//! # Ok::<(), parcode::ParcodeError>(())
 //! ```
 //!
 //! ### Random Access
@@ -137,15 +139,16 @@
 //!
 //! // Setup
 //! let data: Vec<MyStruct> = (0..100).map(|i| MyStruct { val: i }).collect();
-//! Parcode::save("data_random.par", &data).unwrap();
+//! Parcode::save("data_random.par", &data)?;
 //!
-//! let file = Parcode::open("data_random.par").unwrap();
-//! let root = file.root::<Vec<MyStruct>>().unwrap();
+//! let file = Parcode::open("data_random.par")?;
+//! let root = file.root::<Vec<MyStruct>>()?;
 //!
 //! // Get item at index 50 without loading the entire vector
 //! // Note: Using 50 instead of 1,000,000 for a realistic small test
-//! let item = root.get(50).unwrap();
+//! let item = root.get(50)?;
 //! # std::fs::remove_file("data_random.par").ok();
+//! # Ok::<(), parcode::ParcodeError>(())
 //! ```
 //!
 //! ### Streaming Iteration
@@ -161,10 +164,10 @@
 //!
 //! // Setup
 //! let data: Vec<MyStruct> = (0..10).map(|i| MyStruct { val: i }).collect();
-//! Parcode::save("data_iter.par", &data).unwrap();
+//! Parcode::save("data_iter.par", &data)?;
 //!
-//! let file = Parcode::open("data_iter.par").unwrap();
-//! let items: Vec<MyStruct> = file.load().unwrap();
+//! let file = Parcode::open("data_iter.par")?;
+//! let items: Vec<MyStruct> = file.load()?;
 //!
 //! // Note: The current API doesn't have a direct `iter` on root for Vecs yet,
 //! // it usually goes through read_lazy or decode.
@@ -173,6 +176,7 @@
 //!     process(item);
 //! }
 //! # std::fs::remove_file("data_iter.par").ok();
+//! # Ok::<(), parcode::ParcodeError>(())
 //! ```
 //!
 //! ## Performance Characteristics
@@ -246,8 +250,8 @@ impl Deref for DataSource {
     fn deref(&self) -> &Self::Target {
         match self {
             #[cfg(all(feature = "mmap", not(target_arch = "wasm32")))]
-            DataSource::Mmap(mmap) => mmap.as_ref(),
-            DataSource::Memory(vec) => vec.as_slice(),
+            Self::Mmap(mmap) => mmap.as_ref(),
+            Self::Memory(vec) => vec.as_slice(),
         }
     }
 }
@@ -278,15 +282,16 @@ impl Deref for DataSource {
 ///
 /// // Automatically selects parallel reconstruction for Vec
 /// let data = vec![1, 2, 3];
-/// Parcode::save("numbers_native.par", &data).unwrap();
-/// let data: Vec<i32> = Parcode::load("numbers_native.par").unwrap();
+/// let mut buffer = Vec::new();
+/// Parcode::write(&mut buffer, &data)?;
+/// let data: Vec<i32> = Parcode::load_bytes(buffer)?;
 ///
 /// // Automatically selects sequential deserialization for primitives
 /// let val = 42;
-/// Parcode::save("value_native.par", &val).unwrap();
-/// let value: i32 = Parcode::load("value_native.par").unwrap();
-/// # std::fs::remove_file("numbers_native.par").ok();
-/// # std::fs::remove_file("value_native.par").ok();
+/// let mut buffer = Vec::new();
+/// Parcode::write(&mut buffer, &val)?;
+/// let value: i32 = Parcode::load_bytes(buffer)?;
+/// # Ok::<(), parcode::ParcodeError>(())
 /// ```
 pub trait ParcodeNative: Sized {
     /// Reconstructs the object from the given graph node.
@@ -649,10 +654,13 @@ impl ParcodeFile {
             return Err(ParcodeError::Format("File smaller than header".into()));
         }
 
-        let header_start = (file_size - GLOBAL_HEADER_SIZE as u64) as usize;
-        let header_bytes = &source[header_start..];
+        let header_start = usize::try_from(file_size - GLOBAL_HEADER_SIZE as u64)
+            .map_err(|_| ParcodeError::Format("File size too large for usize".into()))?;
+        let header_bytes = source
+            .get(header_start..)
+            .ok_or_else(|| ParcodeError::Format("Failed to access global header".into()))?;
 
-        if header_bytes[0..4] != MAGIC_BYTES {
+        if header_bytes.get(0..4) != Some(&MAGIC_BYTES) {
             return Err(ParcodeError::Format("Invalid Magic Bytes".into()));
         }
 
@@ -784,7 +792,11 @@ impl ParcodeFile {
         let chunk_end = usize::try_from(offset + length)
             .map_err(|_| ParcodeError::Format("Chunk end exceeds address space".into()))?;
 
-        let meta = MetaByte::from_byte(self.source[chunk_end - 1]);
+        let meta_byte = self
+            .source
+            .get(chunk_end - 1)
+            .ok_or_else(|| ParcodeError::Format("Failed to read chunk meta byte".into()))?;
+        let meta = MetaByte::from_byte(*meta_byte);
 
         let mut child_count = 0;
         let mut payload_end = chunk_end - 1;
@@ -795,7 +807,10 @@ impl ParcodeFile {
             }
 
             let count_start = chunk_end - 5;
-            let count_bytes = &self.source[count_start..count_start + 4];
+            let count_bytes = self
+                .source
+                .get(count_start..count_start + 4)
+                .ok_or_else(|| ParcodeError::Format("Failed to read child count".into()))?;
             child_count = Self::read_u32(count_bytes)?;
 
             let footer_size = child_count as usize * ChildRef::SIZE;
@@ -859,7 +874,11 @@ impl<'a> ChunkNode<'a> {
             .map_err(|_| ParcodeError::Format("End offset exceeds address space".into()))?;
 
         // Access via self.reader.source (Deref to &[u8])
-        let raw = &self.reader.source[start..end];
+        let raw = self
+            .reader
+            .source
+            .get(start..end)
+            .ok_or_else(|| ParcodeError::Format("Payload out of bounds".into()))?;
         let method_id = self.meta.compression_method();
 
         self.reader.registry.get(method_id)?.decompress(raw)
@@ -1159,7 +1178,11 @@ impl<'a> ChunkNode<'a> {
             .map_err(|_| ParcodeError::Format("Offset exceeds usize range".into()))?;
         let entry_start = footer_start + (index * ChildRef::SIZE);
 
-        let bytes = &self.reader.source[entry_start..entry_start + ChildRef::SIZE];
+        let bytes = self
+            .reader
+            .source
+            .get(entry_start..entry_start + ChildRef::SIZE)
+            .ok_or_else(|| ParcodeError::Format("Child reference out of bounds".into()))?;
 
         let r = ChildRef::from_bytes(bytes)?;
         self.reader.get_chunk(r.offset, r.length)
