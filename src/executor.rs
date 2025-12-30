@@ -14,8 +14,11 @@ use crate::graph::{Node, TaskGraph};
 use crate::io::SeqWriter;
 use std::io::Write;
 
-/// Context shared among all worker threads.
-struct ExecutionContext<'a, 'graph, W: Write + Send> {
+/// Context shared among all worker threads during parallel execution.
+struct ExecutionContext<'a, 'graph, W>
+where
+    W: Write + Send,
+{
     graph: &'graph TaskGraph<'a>,
     writer: &'graph SeqWriter<W>,
     registry: &'graph CompressorRegistry,
@@ -26,7 +29,10 @@ struct ExecutionContext<'a, 'graph, W: Write + Send> {
 }
 
 #[cfg(feature = "parallel")]
-impl<'a, 'graph, W: Write + Send> ExecutionContext<'a, 'graph, W> {
+impl<'a, 'graph, W> ExecutionContext<'a, 'graph, W>
+where
+    W: Write + Send,
+{
     fn signal_error(&self, err: ParcodeError) {
         let mut guard = self.error_capture.lock().unwrap_or_else(|p| p.into_inner());
         if guard.is_none() {
@@ -53,12 +59,15 @@ impl<'a, 'graph, W: Write + Send> ExecutionContext<'a, 'graph, W> {
 /// # Type Parameters
 ///
 /// * `W`: The writer type. Must implement `std::io::Write` and `Send`.
-pub fn execute_graph<'a, W: Write + Send>(
+pub fn execute_graph<'a, W>(
     graph: &TaskGraph<'a>,
     writer: &SeqWriter<W>,
     registry: &CompressorRegistry,
     use_compression: bool,
-) -> Result<ChildRef> {
+) -> Result<ChildRef>
+where
+    W: Write + Send,
+{
     #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
     {
         execute_graph_parallel(graph, writer, registry, use_compression)
@@ -71,14 +80,17 @@ pub fn execute_graph<'a, W: Write + Send>(
 }
 // ------------
 
-/// PLACEHOLDER
+/// Executes the graph in parallel using Rayon.
 #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
-fn execute_graph_parallel<'a, W: Write + Send>(
+fn execute_graph_parallel<'a, W>(
     graph: &TaskGraph<'a>,
     writer: &SeqWriter<W>,
     registry: &CompressorRegistry,
     use_compression: bool,
-) -> Result<ChildRef> {
+) -> Result<ChildRef>
+where
+    W: Write + Send,
+{
     // 1. Setup the shared context.
     let ctx = ExecutionContext {
         graph,
@@ -130,13 +142,16 @@ fn execute_graph_parallel<'a, W: Write + Send>(
     (*root_guard).ok_or_else(|| ParcodeError::Internal("Graph execution incomplete".into()))
 }
 
-/// PLACEHOLDER
-pub fn execute_graph_sync<'a, W: Write + Send>(
+/// Executes the graph synchronously (single-threaded).
+pub fn execute_graph_sync<'a, W>(
     graph: &TaskGraph<'a>,
     writer: &SeqWriter<W>,
     registry: &CompressorRegistry,
     use_compression: bool,
-) -> Result<ChildRef> {
+) -> Result<ChildRef>
+where
+    W: Write + Send,
+{
     // Buffer re-usable for compression.
     let mut shared_buffer = Vec::with_capacity(128 * 1024);
     let mut root_result: Option<ChildRef> = None;
@@ -177,7 +192,8 @@ pub fn execute_graph_sync<'a, W: Write + Send>(
         // Fallback to None (ID 0) if requested algorithm unavailable
         let compressor = registry
             .get(compression_id)
-            .unwrap_or_else(|_| registry.get(0).unwrap());
+            .or_else(|_| registry.get(0))
+            .map_err(|_| ParcodeError::Internal("Default compressor (ID 0) missing".into()))?;
 
         let footer_size = if is_chunkable {
             (children_refs.len() * ChildRef::SIZE) + 4
@@ -230,11 +246,13 @@ pub fn execute_graph_sync<'a, W: Write + Send>(
 /// The worker function executed by Rayon threads.
 /// It handles Serialization -> Compression -> Writing -> Notification.
 #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
-fn process_node<'scope, 'a, W: Write + Send>(
+fn process_node<'scope, 'a, W>(
     scope: &rayon::Scope<'scope>,
     ctx: &'scope ExecutionContext<'a, 'scope, W>,
     node: &'scope Node<'a>,
-) {
+) where
+    W: Write + Send,
+{
     // 0. Fast abort check
     if ctx.should_abort() {
         return;

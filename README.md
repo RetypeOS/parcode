@@ -46,15 +46,22 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-parcode = "0.5"
+parcode = "0.6"
 ```
 
 To enable LZ4 compression:
 
 ```toml
 [dependencies]
-parcode = { version = "0.4", features = ["lz4_flex"] }
+parcode = { version = "0.6", features = ["lz4_flex"] }
 ```
+
+### Features
+
+* `mmap`: Enable memory mapping
+* `parallel`: Enable parallelization
+* `standard`: Default feature, activate features 'mmap' and 'parallel' (used as Default)
+* `lz4_flex`: Enable LZ4 compression to ID 1.
 
 ---
 
@@ -119,10 +126,10 @@ Parcode::save("savegame.par", &world)?;
 Use the builder mode.
 
 ```rust
-// Saves with LZ4 compression enabled to all metadata.
+// Saves with LZ4 compression on ALL and write parcode serialized data into a new file.
 Parcode::builder()
     .compression(true)
-    .write("savegame_compressed.par", &world)?;
+    .save("savegame_compressed.par", &world)?;
 ```
 
 ### 3. Read Data (Lazy)
@@ -178,13 +185,12 @@ Scan a list of heavy objects without loading their heavy payloads.
 
 ```rust
 // Assume we have Vec<Player>
-for player_proxy in world_mirror.all_players.iter()? {
-    let p = player_proxy?; // Resolve result
+for Ok(player_proxy) in world_mirror.all_players.iter_lazy()? {
     
-    // We can check level WITHOUT loading the player's inventory from disk!
+    // We can check level WITHOUT loading the player's inventory of all players from disk, only you needed!
     if p.level > 50 {
         println!("High level player found!");
-        // p.inventory.load()?; 
+        p.inventory.load()?; 
     }
 }
 ```
@@ -201,11 +207,9 @@ Parcode isn't limited to files. You can serialize directly to any `std::io::Writ
 let mut buffer = Vec::new();
 
 // Serialize directly to RAM
-Parcode::builder()
-    .compression(true)
-    .write(&mut buffer, &my_data)?;
+Parcode::write(&mut buffer, &my_data)?;
 
-// 'buffer' now contains the full Parcode file structure
+// 'buffer' now contains the full Parcode serialized structure
 ```
 
 ### Synchronous Mode
@@ -213,9 +217,7 @@ Parcode::builder()
 For environments where threading is not available (WASM, embedded) or to reduce memory overhead.
 
 ```rust
-Parcode::builder()
-    .compression(true)
-    .write_sync("sync_save.par", &data)?;
+Parcode::write_sync("sync_save.par", &data)?;
 ```
 
 ### Inspector
@@ -246,12 +248,12 @@ Root Offset:    550368
 
 Control exactly how your data structure maps to disk using `#[parcode(...)]`.
 
-|             Attribute           |                     Effect                     |            Best For                                |
-| :------------------------------ | :--------------------------------------------- | :--------------------------------- |
-| **(none)**                      | Field is serialized into the parent's payload. | Small primitives (`u32`, `bool`), short Strings, flags.              |
+|             Attribute           |                     Effect                     |            Best For                                     |
+| :------------------------------ | :--------------------------------------------- | :------------------------------------------------------ |
+| **(none)**                      | Field is serialized into the parent's payload. | Small primitives (`u32`, `bool`), short Strings, flags. |
 | `#[parcode(chunkable)]`         | Field is stored in its own independent Chunk.  | Structs, Vectors, or fields you want to load lazily (`.load()`).   |
 | `#[parcode(map)]`               | Field (`HashMap`) is sharded by hash.          | Large Dictionaries/Indices where you need random access (`.get()`). |
-| `#[parcode(compression="lz4")]` | Overrides compression for this chunk.          | Highly compressible data (text, save states).                      |
+| `#[parcode(compression="lz4")]` | Overrides compression for this chunk.          | Highly compressible data (text, save states).      |
 
 ---
 

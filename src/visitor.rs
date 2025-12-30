@@ -100,7 +100,7 @@
 //! struct MyStructJob<'a> { data: &'a MyStruct }
 //! impl<'a> SerializationJob<'a> for MyStructJob<'a> {
 //!     fn execute(&self, _: &[ChildRef]) -> Result<Vec<u8>> {
-//!         Ok(parcode::internal::bincode::serde::encode_to_vec(&self.data.local_field, parcode::internal::bincode::config::standard()).unwrap())
+//!         Ok(parcode::internal::bincode::serde::encode_to_vec(&self.data.local_field, parcode::internal::bincode::config::standard()).map_err(|e| parcode::ParcodeError::Serialization(e.to_string()))?)
 //!     }
 //!     fn estimated_size(&self) -> usize { 4 }
 //! }

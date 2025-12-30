@@ -68,7 +68,10 @@ impl ParcodeInspector {
     }
 
     /// Convenience wrapper to inspect from path (matches old API if needed).
-    pub fn inspect<P: AsRef<Path>>(path: P) -> Result<DebugReport> {
+    pub fn inspect<P>(path: P) -> Result<DebugReport>
+    where
+        P: AsRef<Path>,
+    {
         let file = ParcodeFile::open(path)?;
         Self::inspect_file(&file)
     }
@@ -123,48 +126,41 @@ impl ParcodeInspector {
                 repeat: u32,
             }
 
-            let slice = &payload.get(8..).expect("Missing Vec header");
-            // We attempt to decode. If it fails, it's not a Vec header.
-            if let Ok((runs, _)) = bincode::serde::decode_from_slice::<Vec<ShardRun>, _>(
-                slice,
-                bincode::config::standard(),
-            ) {
-                let total_items = if payload.len() >= 8 {
-                    u64::from_le_bytes(
-                        payload
-                            .get(0..8)
-                            .expect("Missing Vec header")
-                            .try_into()
-                            .unwrap_or([0; 8]),
-                    )
-                } else {
-                    0
-                };
+            if let Some(slice) = payload.get(8..) {
+                // We attempt to decode. If it fails, it's not a Vec header.
+                if let Ok((runs, _)) = bincode::serde::decode_from_slice::<Vec<ShardRun>, _>(
+                    slice,
+                    bincode::config::standard(),
+                ) {
+                    let total_items = if let Some(header_bytes) = payload.get(0..8) {
+                        u64::from_le_bytes(header_bytes.try_into().unwrap_or([0; 8]))
+                    } else {
+                        0
+                    };
 
-                let distribution = format!(
-                    "Vec<{}> items across {} logical shards",
-                    total_items,
-                    runs.iter().map(|r| r.repeat).sum::<u32>()
-                );
-                return ("Vec Container".to_string(), Some(distribution));
+                    let distribution = format!(
+                        "Vec<{}> items across {} logical shards",
+                        total_items,
+                        runs.iter().map(|r| r.repeat).sum::<u32>()
+                    );
+                    return ("Vec Container".to_string(), Some(distribution));
+                }
             }
         }
 
         // CHECK 2: Map Container (4 bytes exactly)
-        if payload.len() == 4 {
-            let num_shards = u32::from_le_bytes(
-                payload
-                    .get(0..4)
-                    .expect("Missing Map header")
-                    .try_into()
-                    .unwrap_or([0; 4]),
+        if payload.len() == 4
+            && payload
+                .get(0..4)
+                .and_then(|b| b.try_into().ok())
+                .map(u32::from_le_bytes)
+                == Some(node.child_count())
+        {
+            let num_shards = node.child_count();
+            return (
+                "Map Container".to_string(),
+                Some(format!("Hashtable with {} buckets", num_shards)),
             );
-            if num_shards == node.child_count() {
-                return (
-                    "Map Container".to_string(),
-                    Some(format!("Hashtable with {} buckets", num_shards)),
-                );
-            }
         }
 
         ("Generic Container".to_string(), None)

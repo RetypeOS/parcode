@@ -79,7 +79,6 @@
 //!
 //! ```rust
 //! use parcode::compression::{CompressorRegistry, NoCompression};
-//!
 //! let mut registry = CompressorRegistry::new();
 //! registry.register(Box::new(NoCompression));
 //! ```

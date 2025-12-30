@@ -34,17 +34,26 @@ const WRITE_BUFFER_SIZE: usize = 16 * 1024 * 1024;
 /// - Network Streams (`TcpStream`)
 /// - Standard Output (`Stdout`)
 #[derive(Debug)]
-pub struct SeqWriter<W: Write> {
+pub struct SeqWriter<W>
+where
+    W: Write,
+{
     inner: Mutex<WriterState<W>>,
 }
 
 #[derive(Debug)]
-struct WriterState<W: Write> {
+struct WriterState<W>
+where
+    W: Write,
+{
     writer: BufWriter<W>,
     current_offset: u64,
 }
 
-impl<W: Write + Send> SeqWriter<W> {
+impl<W> SeqWriter<W>
+where
+    W: Write + Send,
+{
     /// Wraps any Writer (File, Vec<u8>, `TcpStream`) in a buffered sequential writer.
     pub fn new(writer: W) -> Self {
         Self {

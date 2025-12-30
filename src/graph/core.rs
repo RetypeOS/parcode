@@ -122,10 +122,14 @@ impl<'a> TaskGraph<'a> {
     }
 
     /// Retrieves a reference to a node by its ID.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the `id` does not exist in the graph.
     pub fn get_node(&self, id: ChunkId) -> &Node<'a> {
         self.nodes
             .get(id.as_u32() as usize)
-            .expect("Node ID out of bounds")
+            .expect("TaskGraph invariant violated: Node ID out of bounds")
     }
 
     /// Returns true if the graph has no nodes.
@@ -149,13 +153,15 @@ impl<'a> TaskGraph<'a> {
     /// dependencies (children) before the final job (consuming the data) can be fully constructed.
     ///
     /// # Panics
-    /// Panics if the `id` does not exist.
+    ///
+    /// Panics if the `id` does not exist in the graph. This is considered an internal
+    /// invariant violation.
     pub fn replace_job(&mut self, id: ChunkId, new_job: Box<dyn SerializationJob<'a> + 'a>) {
         let node_idx = id.as_u32() as usize;
         let node = self
             .nodes
             .get_mut(node_idx)
-            .expect("Node ID out of bounds during job replacement");
+            .expect("TaskGraph invariant violated: Node ID not found during job replacement");
         node.job = new_job;
     }
 }

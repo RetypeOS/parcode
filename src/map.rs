@@ -40,7 +40,10 @@ use twox_hash::XxHash64;
 ///
 /// # Returns
 /// A 64-bit hash value
-pub(crate) fn hash_key<K: Hash>(key: &K) -> u64 {
+pub(crate) fn hash_key<K>(key: &K) -> u64
+where
+    K: Hash,
+{
     let mut hasher = XxHash64::with_seed(0);
     key.hash(&mut hasher);
     hasher.finish()

@@ -50,7 +50,7 @@
 //! // Enable compression
 //! Parcode::builder()
 //!     .compression(true)
-//!     .write("data_custom.par", &my_data)?;
+//!     .save("data_custom.par", &my_data)?;
 //! # std::fs::remove_file("data_custom.par")?;
 //! # Ok::<(), parcode::ParcodeError>(())
 //! ```
@@ -96,7 +96,9 @@ impl Parcode {
         ParcodeOptions::default().save(path, root_object)
     }
 
-    /// PLACEHOLDER
+    /// Writes an object to a generic writer with default settings.
+    ///
+    /// This is a convenience method that uses the default [`ParcodeOptions`].
     pub fn write<T, W>(writer: W, root_object: &T) -> Result<()>
     where
         T: ParcodeVisitor + Sync,
@@ -105,7 +107,9 @@ impl Parcode {
         ParcodeOptions::default().write(writer, root_object)
     }
 
-    /// PLACEHOLDER
+    /// Serializes an object into a `Vec<u8>` in memory.
+    ///
+    /// This is a convenience method that creates a buffer and calls [`Self::write`].
     pub fn serialize<T>(root_object: &T) -> Result<Vec<u8>>
     where
         T: ParcodeVisitor + Sync,
@@ -125,38 +129,26 @@ impl Parcode {
         ParcodeFile::open(path)?.load()
     }
 
-    /// PLACEHOLDER
-    pub fn load_bytes<T: ParcodeNative>(data: Vec<u8>) -> Result<T> {
+    /// Loads an object fully into memory from a byte slice.
+    pub fn load_bytes<T>(data: Vec<u8>) -> Result<T>
+    where
+        T: ParcodeNative,
+    {
         ParcodeFile::from_bytes(data)?.load()
     }
 
     /// Opens a Parcode resource using the configured storage backend.
-    ///
-    /// # Arguments
-    /// * `input`: Can be:
-    ///   - `Vec<u8>`: Direct memory (WASM compatible).
-    ///   - `Path / String`: File system path (Requires `mmap` or fallback read).
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// // Desktop (Mmap)
-    /// Parcode::open("data.par")?;
-    ///
-    /// // WASM (Memory)
-    /// let bytes = fetch(...).await;
-    /// Parcode::open(bytes)?;
-    /// ```
     #[cfg(not(target_arch = "wasm32"))]
     pub fn open<P: AsRef<Path>>(path: P) -> Result<ParcodeFile> {
         ParcodeFile::open(path)
     }
 
-    /// PLACEHOLDER
+    /// Opens a Parcode resource from a byte slice.
     pub fn open_bytes(data: Vec<u8>) -> Result<ParcodeFile> {
         ParcodeFile::from_bytes(data)
     }
 
-    /// PLACEHOLDER
+    /// Writes an object to a generic writer synchronously.
     pub fn write_sync<T, W>(writer: W, root_object: &T) -> Result<()>
     where
         T: ParcodeVisitor,
@@ -165,7 +157,7 @@ impl Parcode {
         ParcodeOptions::default().write_sync(writer, root_object)
     }
 
-    /// PLACEHOLDER
+    /// Saves an object to a file synchronously.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn save_sync<T, P>(path: P, root_object: &T) -> Result<()>
     where
@@ -189,7 +181,7 @@ impl Parcode {
         ParcodeInspector::inspect(path)
     }
 
-    /// PLACEHOLDER
+    /// Generates a structural inspection report from a byte slice.
     pub fn inspect_bytes(data: Vec<u8>) -> Result<DebugReport> {
         let file = ParcodeFile::from_bytes(data)?;
         ParcodeInspector::inspect_file(&file)
@@ -229,7 +221,7 @@ impl Parcode {
 /// let data = vec![1, 2, 3];
 /// Parcode::builder()
 ///     .compression(true)
-///     .write("data_comp.par", &data)?;
+///     .save("data_comp.par", &data)?;
 /// # std::fs::remove_file("data_comp.par")?;
 /// # Ok::<(), parcode::ParcodeError>(())
 /// ```
@@ -284,7 +276,7 @@ impl ParcodeOptions {
     /// // Enable compression
     /// Parcode::builder()
     ///     .compression(true)
-    ///     .write("data.par", &my_data)?;
+    ///     .save("data.par", &my_data)?;
     /// # std::fs::remove_file("data.par")?;
     /// # Ok::<(), parcode::ParcodeError>(())
     /// ```
@@ -347,7 +339,7 @@ impl ParcodeOptions {
     /// // Write with compression
     /// Parcode::builder()
     ///     .compression(true)
-    ///     .write("data_write.par", &data)?;
+    ///     .save("data_write.par", &data)?;
     /// # std::fs::remove_file("data_write.par")?;
     /// # Ok::<(), parcode::ParcodeError>(())
     /// ```
@@ -363,17 +355,6 @@ impl ParcodeOptions {
     /// Serializes an object graph to disk with the configured settings.
     ///
     /// This is a convenience wrapper around `write` that handles file creation.
-    ///
-    /// ## Type Parameters
-    ///
-    /// - `T`: The type to serialize. Must implement [`ParcodeVisitor`]
-    ///   and `Sync` (for parallel execution).
-    /// - `P`: The path type (anything that implements `AsRef<Path>`).
-    ///
-    /// ## Parameters
-    ///
-    /// - `path`: The file path to write to. If the file exists, it will be truncated.
-    /// - `root_object`: A reference to the object to serialize.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn save<T, P>(&self, path: P, root_object: &T) -> Result<()>
     where
@@ -476,7 +457,9 @@ impl ParcodeOptions {
         self.write_sync(file, root_object)
     }
 
-    /// PLACEHOLDER
+    /// Serializes the object graph to a generic writer synchronously.
+    ///
+    /// This method is equivalent to [`Self::write`] but avoids parallel execution.
     pub fn write_sync<'a, T, W>(&self, writer: W, root_object: &'a T) -> Result<()>
     where
         T: ParcodeVisitor,

@@ -5,8 +5,9 @@ description = "Blazing fast parallel caching for Rust. Serializes complex data t
 [scripts.check]
 run = [
     "# === Running all standard quality tests... ===",
+    "cargo build <vars::_cargo_all>",
     "> cargo fmt -- --check",
-    "> cargo clippy <vars::_cargo_all>-- -D warnings",
+    "> cargo clippy <vars::_cargo_all> -- -D warnings",
     "> cargo test <vars::_cargo_all>",
     "# <#green>=== Completed! now you can make a PR. ===<#reset>",
 ]
