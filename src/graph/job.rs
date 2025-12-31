@@ -8,7 +8,8 @@ pub struct JobConfig {
     /// Compression algorithm ID.
     /// 0 = No Compression (Default)
     /// 1 = Lz4 (if feature enabled)
-    /// 2..255 = Reserved
+    /// 0..16 = Reserved
+    /// 17..255 = Custom
     pub compression_id: u8,
     /// Whether to use the optimized Map Sharding strategy.
     pub is_map: bool,

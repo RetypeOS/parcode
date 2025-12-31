@@ -242,6 +242,8 @@ Root Offset:    550368
     └── [Map Container] Size: 4b | Algo: None | Children: 4 [Hashtable with 4 buckets]
 ```
 
+**Note**: `Algo` means compression algorithm.
+
 ---
 
 ## Macro Attributes Reference
