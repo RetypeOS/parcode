@@ -122,6 +122,7 @@ fn test_lazy_load_memory() -> parcode::Result<()> {
 /// Compression
 /// Validate `ParcodeOptions`, `CompressorRegistry`
 #[test]
+#[cfg(feature = "lz4_flex")]
 fn test_compression_config() -> parcode::Result<()> {
     let data = create_complex_data();
     let mut buffer_compressed = Vec::new();

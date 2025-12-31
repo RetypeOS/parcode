@@ -5,10 +5,19 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tempfile::NamedTempFile;
 
+#[cfg(feature = "lz4_flex")]
 #[derive(Serialize, Deserialize, ParcodeObject)]
 struct UserDatabase {
     id: u32,
     #[parcode(map, compression = "lz4")]
+    users: HashMap<String, UserProfile>,
+}
+
+#[cfg(not(feature = "lz4_flex"))]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, ParcodeObject)]
+struct UserDatabase {
+    id: u32,
+    #[parcode(map)]
     users: HashMap<String, UserProfile>,
 }
 
