@@ -71,6 +71,7 @@ use crate::reader::{ParcodeFile, ParcodeNative};
 use crate::visitor::ParcodeVisitor;
 use std::io::Write;
 use std::path::Path;
+use std::sync::Arc;
 
 /// The main entry point for Parcode.
 ///
@@ -130,7 +131,7 @@ impl Parcode {
     }
 
     /// Loads an object fully into memory from a byte slice.
-    pub fn load_bytes<T>(data: Vec<u8>) -> Result<T>
+    pub fn load_bytes<T>(data: impl Into<Arc<Vec<u8>>>) -> Result<T>
     where
         T: ParcodeNative,
     {
@@ -139,12 +140,15 @@ impl Parcode {
 
     /// Opens a Parcode resource using the configured storage backend.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn open<P: AsRef<Path>>(path: P) -> Result<ParcodeFile> {
+    pub fn open<P>(path: P) -> Result<ParcodeFile>
+    where
+        P: AsRef<Path>,
+    {
         ParcodeFile::open(path)
     }
 
     /// Opens a Parcode resource from a byte slice.
-    pub fn open_bytes(data: Vec<u8>) -> Result<ParcodeFile> {
+    pub fn open_bytes(data: impl Into<Arc<Vec<u8>>>) -> Result<ParcodeFile> {
         ParcodeFile::from_bytes(data)
     }
 
@@ -182,7 +186,7 @@ impl Parcode {
     }
 
     /// Generates a structural inspection report from a byte slice.
-    pub fn inspect_bytes(data: Vec<u8>) -> Result<DebugReport> {
+    pub fn inspect_bytes(data: impl Into<Arc<Vec<u8>>>) -> Result<DebugReport> {
         let file = ParcodeFile::from_bytes(data)?;
         ParcodeInspector::inspect_file(&file)
     }

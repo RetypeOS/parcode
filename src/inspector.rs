@@ -67,7 +67,7 @@ impl ParcodeInspector {
         })
     }
 
-    /// Convenience wrapper to inspect from path (matches old API if needed).
+    /// Convenience wrapper to inspect from path.
     pub fn inspect<P>(path: P) -> Result<DebugReport>
     where
         P: AsRef<Path>,

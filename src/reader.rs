@@ -644,9 +644,10 @@ impl ParcodeFile {
     ///
     /// This is the primary entry point for tests and architectures without direct file access.
     /// The `ParcodeFile` takes ownership of the data (wrapped in Arc).
-    pub fn from_bytes(data: Vec<u8>) -> Result<Self> {
-        let size = data.len() as u64;
-        Self::init(DataSource::Memory(Arc::new(data)), size)
+    pub fn from_bytes(data: impl Into<Arc<Vec<u8>>>) -> Result<Self> {
+        let data_arc = data.into();
+        let size = data_arc.len() as u64;
+        Self::init(DataSource::Memory(data_arc), size)
     }
 
     fn init(source: DataSource, file_size: u64) -> Result<Self> {
