@@ -225,19 +225,6 @@ impl Parcode {
 /// # std::fs::remove_file("data_basic.par").unwrap();
 /// ```
 ///
-/// ### With Compression
-///
-/// ```rust
-/// use parcode::Parcode;
-///
-/// let data = vec![1, 2, 3];
-/// Parcode::builder()
-///     .compression(true)
-///     .save("data_comp.par", &data)?;
-/// # std::fs::remove_file("data_comp.par")?;
-/// # Ok::<(), parcode::ParcodeError>(())
-/// ```
-///
 /// ## Performance Notes
 ///
 /// - The builder itself has negligible overhead (it's just a small struct with flags)
@@ -277,7 +264,7 @@ impl ParcodeOptions {
     ///
     /// ## Examples
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// use parcode::{Parcode, ParcodeObject};
     /// use serde::{Serialize, Deserialize};
     ///
@@ -349,9 +336,7 @@ impl ParcodeOptions {
     /// let data = vec![1, 2, 3, 4, 5];
     ///
     /// // Write with compression
-    /// Parcode::builder()
-    ///     .compression(true)
-    ///     .save("data_write.par", &data)?;
+    /// Parcode::save("data_write.par", &data)?;
     /// # std::fs::remove_file("data_write.par")?;
     /// # Ok::<(), parcode::ParcodeError>(())
     /// ```

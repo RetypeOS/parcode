@@ -23,15 +23,15 @@ exclude = [
 # Local
 #parcode-derive = { path = "parcode-derive" }
 # Personal
-parcode-derive = { version = "0.4.0" }
+parcode-derive = { version = "0.4" }
 # Third
-bincode = { version = "2.0.1", features = ["serde"] }
-serde = { version = "1.0.228", features = ["derive", "rc"] }
-twox-hash = "2.1.2"
+bincode = { version = "2.0", features = ["serde"] }
+serde = { version = "1.0", features = ["derive", "rc"] }
+twox-hash = "2.1"
 # Optional
-rayon = { version = "1.11.0", optional = true }
-memmap2 = { version = "0.9.9", optional = true }
-lz4_flex = { version = "0.12.0", optional = true }
+rayon = { version = "1.11", optional = true }
+memmap2 = { version = "0.9", optional = true }
+lz4_flex = { version = "0.12", optional = true }
 
 [features]
 default = ["parallel", "mmap"]
@@ -41,8 +41,8 @@ lz4_flex = ["dep:lz4_flex"]
 
 [dev-dependencies]
 tempfile = "3.24"
-criterion = "0.8.1"
-serde_bytes = "0.11.19"
+criterion = "0.8"
+serde_bytes = "0.11"
 
 [[bench]]
 name = "performance"
