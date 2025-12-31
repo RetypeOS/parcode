@@ -9,11 +9,10 @@ use parcode::{Parcode, ParcodeObject};
 use serde::{Deserialize, Serialize};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{BufReader, BufWriter};
+use std::io::Cursor;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
-use tempfile::NamedTempFile;
 
 // ============================================================================
 // 1. MEMORY PROFILER
@@ -94,7 +93,6 @@ struct Region {
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug, ParcodeObject)]
 struct Zone {
     id: u32,
-    // Heavy payload
     #[parcode(chunkable)]
     terrain_data: Vec<u8>,
 }
@@ -176,9 +174,6 @@ fn main() -> parcode::Result<()> {
     ALLOCATOR.reset();
     let world_data = generate_world();
 
-    let path_par = NamedTempFile::new().expect("Failed to create temp file");
-    let path_bin = NamedTempFile::new().expect("Failed to create temp file");
-
     // ------------------------------------------------------------------------
     // TEST 1: WRITING (Serialization)
     // ------------------------------------------------------------------------
@@ -187,59 +182,78 @@ fn main() -> parcode::Result<()> {
     // Parcode
     ALLOCATOR.reset();
     let t_start = Instant::now();
-    Parcode::save(path_par.path(), &world_data)?;
+    let mut parcode_buffer = Vec::new();
+    Parcode::write(&mut parcode_buffer, &world_data)?;
     let t_par_write = t_start.elapsed();
     let mem_par_write = ALLOCATOR.peak();
-    let size_par = path_par.path().metadata()?.len();
+    let size_par = parcode_buffer.len();
+    let parcode_buffer = Arc::new(parcode_buffer);
 
     // Bincode
     ALLOCATOR.reset();
     let t_start = Instant::now();
-    {
-        let mut w = BufWriter::new(File::create(path_bin.path())?);
-        bincode::serde::encode_into_std_write(&world_data, &mut w, bincode::config::standard())
-            .expect("Bincode serialization failed");
-    }
+    let mut bincode_buffer = Vec::new();
+    bincode::serde::encode_into_std_write(
+        &world_data,
+        &mut bincode_buffer,
+        bincode::config::standard(),
+    )
+    .expect("Bincode serialization failed");
     let t_bin_write = t_start.elapsed();
     let mem_bin_write = ALLOCATOR.peak();
-    let size_bin = path_bin.path().metadata()?.len();
+    let size_bin = bincode_buffer.len();
 
     print_metric("Write Time", t_par_write, t_bin_write);
     print_ram("Write RAM", mem_par_write, mem_bin_write);
     print_size("Disk Size", size_par, size_bin);
 
     // ------------------------------------------------------------------------
-    // TEST 2: COLD START (Open File & Parse Metadata)
+    // TEST 2: Full Read (Read all data from buffer)
     // ------------------------------------------------------------------------
-    println!("\n[TEST 2: COLD START (Ready to Read)]");
+    println!("\n[TEST 2: Full Read]");
 
-    // Parcode: Lazy Read (Solo lee Header + Root Chunk)
+    // Parcode: deserialize EVERYTHING optionally
     ALLOCATOR.reset();
     let t_start = Instant::now();
-    let file_handle = Parcode::open(path_par.path())?;
-    let lazy_world = file_handle.root::<WorldState>()?;
+    let _full_world: WorldState = Parcode::load_bytes(parcode_buffer.clone())?;
     let t_par_open = t_start.elapsed();
     let mem_par_open = ALLOCATOR.peak();
 
     // Bincode: Must deserialize EVERYTHING to be usable
     ALLOCATOR.reset();
     let t_start = Instant::now();
-    let file = File::open(path_bin.path())?;
-    let mut br = BufReader::new(file);
-    let _full_world: WorldState =
-        bincode::serde::decode_from_std_read(&mut br, bincode::config::standard())
-            .expect("Bincode deserialization failed");
+    let _full_world: WorldState = bincode::serde::decode_from_std_read(
+        &mut Cursor::new(&bincode_buffer),
+        bincode::config::standard(),
+    )
+    .expect("Bincode deserialization failed");
     let t_bin_open = t_start.elapsed();
     let mem_bin_open = ALLOCATOR.peak();
 
-    print_metric("Time to Ready", t_par_open, t_bin_open); // Expect massive win for Parcode
+    print_metric("Time to Ready", t_par_open, t_bin_open);
     print_ram("RAM to Ready", mem_par_open, mem_bin_open);
 
     // ------------------------------------------------------------------------
-    // TEST 3: DEEP SURGICAL FETCH
+    // TEST 3: COLD START (Parse Metadata vs Full Read)
+    // ------------------------------------------------------------------------
+    println!("\n[TEST 3: COLD START (Parse Metadata vs Full Read)]");
+
+    // Parcode: Lazy Read (Solo lee Header + Root Chunk)
+    ALLOCATOR.reset();
+    let t_start = Instant::now();
+    let file_handle = Parcode::open_bytes(parcode_buffer.clone())?;
+    let lazy_world = file_handle.root::<WorldState>()?;
+    let t_par_open = t_start.elapsed();
+    let mem_par_open = ALLOCATOR.peak();
+
+    print_metric("Time to Ready", t_par_open, t_bin_open);
+    print_ram("RAM to Ready", mem_par_open, mem_bin_open);
+
+    // ------------------------------------------------------------------------
+    // TEST 4: DEEP SURGICAL FETCH (Lazy vs Full Read)
     // Target: World -> Region[5] -> Zone[20] -> TerrainData (First byte)
     // ------------------------------------------------------------------------
-    println!("\n[TEST 3: DEEP SURGICAL FETCH]");
+    println!("\n[TEST 4: DEEP SURGICAL FETCH]");
 
     // Parcode: Navigate Graph
     ALLOCATOR.reset();
@@ -252,19 +266,14 @@ fn main() -> parcode::Result<()> {
     let mem_par_deep = ALLOCATOR.peak();
     black_box(byte);
 
-    // Bincode: Already loaded in memory (zero time now, but paid huge upfront cost).
-    // To be fair, we compare "Time to fetch specific item from cold disk".
-    // Bincode Time = Open Time (Test 2) + Access Time (0).
-    let t_bin_deep = t_bin_open;
-
-    print_metric("Fetch Time", t_par_deep, t_bin_deep);
+    print_metric("Fetch Time", t_par_deep, t_bin_open);
     print_ram("Fetch RAM", mem_par_deep, mem_bin_open);
 
     // ------------------------------------------------------------------------
-    // TEST 4: MAP LOOKUP (Random Access)
+    // TEST 5: MAP LOOKUP (Random Access)
     // Target: User #88888
     // ------------------------------------------------------------------------
-    println!("\n[TEST 4: MAP LOOKUP (User #88888)]");
+    println!("\n[TEST 5: MAP LOOKUP (User #88888)]");
 
     // Parcode: Hash -> Bucket -> Scan
     ALLOCATOR.reset();
@@ -274,11 +283,7 @@ fn main() -> parcode::Result<()> {
     let mem_par_map = ALLOCATOR.peak();
     black_box(user);
 
-    // Bincode: Memory lookup (Fast) but heavily taxed by initial load.
-    // Again, comparing Cold Access Time.
-    let t_bin_map = t_bin_open;
-
-    print_metric("Lookup Time", t_par_map, t_bin_map);
+    print_metric("Lookup Time", t_par_map, t_bin_open);
     print_ram("Lookup RAM", mem_par_map, mem_bin_open);
 
     Ok(())
@@ -306,7 +311,7 @@ fn print_ram(label: &str, par: usize, bin: usize) {
     );
 }
 
-fn print_size(label: &str, par: u64, bin: u64) {
+fn print_size(label: &str, par: usize, bin: usize) {
     let p_mb = par as f64 / 1048576.0;
     let b_mb = bin as f64 / 1048576.0;
     let overhead = ((p_mb / b_mb) - 1.0) * 100.0;

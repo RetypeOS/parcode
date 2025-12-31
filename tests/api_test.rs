@@ -67,7 +67,7 @@ fn test_memory_io() -> parcode::Result<()> {
 }
 
 /// Explicit Synchronous Write (Forced)
-/// Validate `Parcode::write_sync`, `execute_graph_sync`
+/// Validate `Parcode::write_sync`, `execute_graph_serial`
 #[test]
 fn test_explicit_sync_write() -> parcode::Result<()> {
     let data = create_complex_data();

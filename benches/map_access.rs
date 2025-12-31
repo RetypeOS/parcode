@@ -2,8 +2,7 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use parcode::{Parcode, ParcodeObject};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use tempfile::NamedTempFile;
+use std::{collections::HashMap, sync::Arc};
 
 #[derive(Serialize, Deserialize, ParcodeObject)]
 struct MapContainer {
@@ -21,14 +20,14 @@ fn bench_map(c: &mut Criterion) {
     }
 
     let data = MapContainer { opt_map: map };
-    let file = NamedTempFile::new().expect("Failed to create temp file");
-    Parcode::save(file.path(), &data).expect("Failed to save parcode data");
-    let path = file.path().to_owned();
+    let mut buffer = Vec::new();
+    Parcode::write(&mut buffer, &data).expect("Failed to write parcode data");
+    let buffer = Arc::new(buffer);
 
     let mut group = c.benchmark_group("Map Random Access");
 
     group.bench_function("optimized_lookup", |b| {
-        let file_handle = Parcode::open(&path).expect("Failed to open file");
+        let file_handle = Parcode::open_bytes(buffer.clone()).expect("Failed to open file");
         let lazy = file_handle
             .root::<MapContainer>()
             .expect("Failed to read lazy");

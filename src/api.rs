@@ -48,9 +48,7 @@
 //! let my_data = MyType { val: 42 };
 //!
 //! // Enable compression
-//! Parcode::builder()
-//!     .compression(true)
-//!     .save("data_custom.par", &my_data)?;
+//! Parcode::save("data_custom.par", &my_data)?;
 //! # std::fs::remove_file("data_custom.par")?;
 //! # Ok::<(), parcode::ParcodeError>(())
 //! ```
@@ -176,9 +174,19 @@ impl Parcode {
     /// This is a convenience wrapper equivalent to `ParcodeInspector::inspect`.
     ///
     /// # Example
-    /// ```rust,ignore
-    /// let report = Parcode::inspect("data.par")?;
+    /// ```rust
+    /// use parcode::{Parcode, ParcodeObject};
+    /// use serde::{Serialize,Deserialize};
+    ///
+    /// #[derive(Serialize, Deserialize, ParcodeObject)]
+    /// struct MyType { val: i32 }
+    ///
+    /// let data = MyType { val: 42 };
+    /// let serialized = Parcode::serialize(&data)?;
+    ///
+    /// let report = Parcode::inspect_bytes(serialized)?;
     /// println!("{}", report);
+    /// # Ok::<(), parcode::ParcodeError>(())
     /// ```
     #[cfg(not(target_arch = "wasm32"))]
     pub fn inspect<P: AsRef<Path>>(path: P) -> Result<DebugReport> {
@@ -476,7 +484,7 @@ impl ParcodeOptions {
         let registry = crate::compression::CompressorRegistry::new();
 
         #[cfg(feature = "parallel")]
-        let root_child_ref = crate::executor::execute_graph_sync(
+        let root_child_ref = crate::executor::execute_graph_serial(
             &graph,
             &seq_writer,
             &registry,

@@ -4,17 +4,26 @@
 //! to be purely reactive: completed children trigger the scheduling of their parents,
 //! eliminating the need for a central polling loop and reducing latency.
 
+use std::io::Write;
+
+#[cfg(feature = "parallel")]
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "parallel")]
+use std::sync::atomic::AtomicBool;
+#[cfg(feature = "parallel")]
+use std::sync::atomic::Ordering;
 
 use crate::compression::CompressorRegistry;
 use crate::error::{ParcodeError, Result};
 use crate::format::{ChildRef, MetaByte};
-use crate::graph::{Node, TaskGraph};
+use crate::graph::TaskGraph;
 use crate::io::SeqWriter;
-use std::io::Write;
+
+#[cfg(feature = "parallel")]
+use crate::graph::Node;
 
 /// Context shared among all worker threads during parallel execution.
+#[cfg(feature = "parallel")]
 struct ExecutionContext<'a, 'graph, W>
 where
     W: Write + Send,
@@ -75,7 +84,7 @@ where
 
     #[cfg(any(not(feature = "parallel"), target_arch = "wasm32"))]
     {
-        execute_graph_serial_fallback(graph, writer, registry, use_compression)
+        execute_graph_serial(graph, writer, registry, use_compression)
     }
 }
 // ------------
@@ -143,7 +152,7 @@ where
 }
 
 /// Executes the graph synchronously (single-threaded).
-pub fn execute_graph_sync<'a, W>(
+pub fn execute_graph_serial<'a, W>(
     graph: &TaskGraph<'a>,
     writer: &SeqWriter<W>,
     registry: &CompressorRegistry,
