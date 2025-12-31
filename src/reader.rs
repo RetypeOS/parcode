@@ -632,7 +632,8 @@ impl ParcodeFile {
 
             let mut file = File::open(path)?;
             let file_size = file.metadata()?.len();
-            let mut buffer = Vec::with_capacity(file_size as usize);
+            let mut buffer =
+                Vec::with_capacity(usize::try_from(file_size).expect("File size too large"));
 
             file.read_to_end(&mut buffer)?;
 

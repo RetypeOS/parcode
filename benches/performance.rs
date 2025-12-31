@@ -3,10 +3,9 @@
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use parcode::{Parcode, ParcodeObject};
 use serde::{Deserialize, Serialize};
-use std::fs::File;
 use std::hint::black_box;
-use std::io::BufWriter;
-use tempfile::NamedTempFile;
+use std::io::Cursor;
+use std::sync::Arc;
 
 #[derive(Clone, Serialize, Deserialize, ParcodeObject, Debug)]
 struct BenchItem {
@@ -45,12 +44,11 @@ fn bench_writers(c: &mut Criterion) {
 
     // 1. Baseline: Bincode (Single Threaded)
     group.bench_function("bincode_serialize", |b| {
+        let mut buffer = Vec::new();
         b.iter(|| {
-            let file = NamedTempFile::new().expect("Failed to create temp file");
-            let mut writer = BufWriter::new(file);
             bincode::serde::encode_into_std_write(
                 black_box(raw_data),
-                &mut writer,
+                &mut Cursor::new(&mut buffer),
                 bincode::config::standard(),
             )
             .expect("Bincode serialization failed");
@@ -59,9 +57,9 @@ fn bench_writers(c: &mut Criterion) {
 
     // 2. Parcode
     group.bench_function("parcode_save", |b| {
+        let mut buffer = Vec::new();
         b.iter(|| {
-            let file = NamedTempFile::new().expect("Failed to create temp file");
-            Parcode::save(file.path(), black_box(&data)).expect("Failed to save parcode data");
+            Parcode::write(&mut buffer, black_box(&data)).expect("Failed to save parcode data");
         });
     });
 
@@ -76,20 +74,20 @@ fn bench_readers(c: &mut Criterion) {
     let data = generate_data(item_count);
 
     // Setup files
-    let bincode_file = NamedTempFile::new().expect("Failed to create temp file");
+    let mut bincode_buffer = Vec::new();
+
     bincode::serde::encode_into_std_write(
         &data.data,
-        &mut BufWriter::new(&bincode_file),
+        &mut bincode_buffer,
         bincode::config::standard(),
     )
     .expect("Bincode serialization failed");
-    let bincode_path = bincode_file.path().to_owned();
 
-    let parcode_file = NamedTempFile::new().expect("Failed to create temp file");
-    Parcode::save(parcode_file.path(), &data).expect("Failed to save parcode data");
-    let parcode_path = parcode_file.path().to_owned();
+    let mut parcode_buffer = Vec::new();
+    Parcode::write(&mut parcode_buffer, &data).expect("Failed to save parcode data");
+    let parcode_buffer = Arc::new(parcode_buffer);
 
-    let file_handle = Parcode::open(&parcode_path).expect("Failed to open file");
+    let file_handle = Parcode::open_bytes(parcode_buffer.clone()).expect("Failed to open file");
     let root = file_handle.root_node().expect("Failed to get root");
     println!(
         "Chunks detected: {}",
@@ -101,19 +99,27 @@ fn bench_readers(c: &mut Criterion) {
     // 1. Bincode: Standard
     group.bench_function("bincode_read_all", |b| {
         b.iter(|| {
-            let file = File::open(&bincode_path).expect("Failed to open file");
             let _res: Vec<BenchItem> = bincode::serde::decode_from_std_read(
-                &mut std::io::BufReader::new(file),
+                &mut Cursor::new(&bincode_buffer),
                 bincode::config::standard(),
             )
             .expect("Bincode deserialization failed");
         });
     });
 
-    // 2. Parcode: Random Access (Single item)
+    // 2. Parcode: Parallel full load
+    group.bench_function("parcode_read_all", |b| {
+        b.iter(|| {
+            let _res: BenchCollection =
+                Parcode::load_bytes(parcode_buffer.clone()).expect("Failed to open file");
+        });
+    });
+
+    // 3. Parcode: Random Access (Single item)
     group.bench_function("parcode_random_access_10", |b| {
         b.iter(|| {
-            let file_handle = Parcode::open(&parcode_path).expect("Failed to open file");
+            let file_handle =
+                Parcode::open_bytes(parcode_buffer.clone()).expect("Failed to open file");
             let root = file_handle
                 .root::<BenchCollection>()
                 .expect("Failed to get root");
@@ -124,17 +130,10 @@ fn bench_readers(c: &mut Criterion) {
         });
     });
 
-    // 3. Parcode: Parallel Stitching
-    group.bench_function("parcode_read_all_parallel", |b| {
-        b.iter(|| {
-            let _res: BenchCollection = Parcode::load(&parcode_path).expect("Failed to open file");
-        });
-    });
-
     // 4. Parcode: lazy iterator
     group.bench_function("parcode_read_all_iter", |b| {
         b.iter(|| {
-            let file = Parcode::open(&parcode_path).expect("Failed to open file");
+            let file = Parcode::open_bytes(parcode_buffer.clone()).expect("Failed to open file");
             let data = file
                 .load_lazy::<BenchCollection>()
                 .expect("Some error was ocurred");
