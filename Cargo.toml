@@ -40,7 +40,7 @@ mmap = ["dep:memmap2"]
 lz4_flex = ["dep:lz4_flex"]
 
 [dev-dependencies]
-tempfile = "3.24"
+tempfile = "3.27"
 criterion = "0.8"
 serde_bytes = "0.11"
 
