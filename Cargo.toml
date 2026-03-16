@@ -31,7 +31,7 @@ twox-hash = "2.1"
 # Optional
 rayon = { version = "1.11", optional = true }
 memmap2 = { version = "0.9", optional = true }
-lz4_flex = { version = "0.12", optional = true }
+lz4_flex = { version = "0.13", optional = true }
 
 [features]
 default = ["parallel", "mmap"]
