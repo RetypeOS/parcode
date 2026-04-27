@@ -29,7 +29,7 @@ bincode = { version = "2.0", features = ["serde"] }
 serde = { version = "1.0", features = ["derive", "rc"] }
 twox-hash = "2.1"
 # Optional
-rayon = { version = "1.11", optional = true }
+rayon = { version = "1.12", optional = true }
 memmap2 = { version = "0.9", optional = true }
 lz4_flex = { version = "0.12", optional = true }
 
